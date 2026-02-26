@@ -41,6 +41,8 @@ struct Uniforms {
     var time: Float = 0
     var blinkOn: UInt32 = 1
     var scrollY: Float = 0          // Viewport scroll offset in pixels (for smooth scrolling)
+    var backingScale: Float = 1     // Screen backing scale factor (e.g. 2.0 on Retina)
+    var _pad: Float = 0             // Align to 16 bytes
 }
 
 /// Per-image-quad data sent to the GPU for image rendering.
@@ -636,6 +638,7 @@ public class MetalTerminalRenderer: TerminalRenderer {
         uniforms.time = Float(CACurrentMediaTime())
         uniforms.blinkOn = (terminalView?.blinkOn ?? true) ? 1 : 0
         uniforms.scrollY = 0   // Cell buffer already reads correct lines via bufferOffset (yDisp)
+        uniforms.backingScale = backingScale
 
         let ptr = uniformBuffer.contents().bindMemory(to: Uniforms.self, capacity: 1)
         ptr.pointee = uniforms
@@ -746,6 +749,8 @@ public class MetalTerminalRenderer: TerminalRenderer {
         float time;
         uint32_t blinkOn;
         float scrollY;
+        float backingScale;
+        float _pad;
     };
 
     struct GlyphEntry {
@@ -833,8 +838,10 @@ public class MetalTerminalRenderer: TerminalRenderer {
         float2 pos = positions[vertexID];
         float2 cellOrigin = float2(col, row) * uniforms.cellSize;
         cellOrigin.y -= uniforms.scrollY;
-        float2 glyphOrigin = cellOrigin + float2(glyph.bearing.x, glyph.bearing.y);
-        float2 pixelPos = glyphOrigin + pos * glyph.size;
+        // Glyph bearing and size are in logical pixels; scale to backing pixels
+        float s = uniforms.backingScale;
+        float2 glyphOrigin = cellOrigin + float2(glyph.bearing.x, glyph.bearing.y) * s;
+        float2 pixelPos = glyphOrigin + pos * glyph.size * s;
 
         float2 clipPos = (pixelPos / uniforms.viewportSize) * 2.0 - 1.0;
         clipPos.y = -clipPos.y;
