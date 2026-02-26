@@ -889,7 +889,7 @@ public class MetalTerminalRenderer: TerminalRenderer {
             discard_fragment();
         }
 
-        constexpr sampler s(filter::linear);
+        constexpr sampler s(filter::nearest);
         float alpha = atlas.sample(s, in.texCoord).r;
 
         if (alpha < 0.01) discard_fragment();

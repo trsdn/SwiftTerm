@@ -239,10 +239,12 @@ public class GlyphAtlas {
             let scale = rasterScale
             cgContext.scaleBy(x: scale, y: scale)
 
-            // Enable anti-aliasing and font smoothing for quality matching native rendering
-            cgContext.setAllowsAntialiasing(true)
-            cgContext.setShouldAntialias(true)
-            cgContext.setShouldSmoothFonts(true)
+            // Disable font smoothing — it creates wide halos in grayscale contexts
+            // that look washed-out when used as alpha in the shader.
+            // At Retina resolution, standard rasterization is sharp enough.
+            cgContext.setAllowsAntialiasing(false)
+            cgContext.setShouldAntialias(false)
+            cgContext.setShouldSmoothFonts(false)
 
             // Clear to black (transparent in our shader)
             cgContext.setFillColor(CGColor(gray: 0, alpha: 1))
