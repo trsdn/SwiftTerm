@@ -251,7 +251,19 @@ public struct CharData: CustomDebugStringConvertible {
     // This contains an assigned key
     var payload: TinyAtom
     
-    var unused: UInt8 // Purely here to align to 16 bytes
+    var flags: UInt8 // Alignment byte, also stores per-cell flags
+
+    static let tabFillerFlag: UInt8 = 0x01
+
+    /// Whether this cell was filled by a horizontal tab expansion.
+    /// Used to reconstruct tab characters during copy/paste.
+    var isTabFiller: Bool {
+        get { flags & CharData.tabFillerFlag != 0 }
+        set {
+            if newValue { flags |= CharData.tabFillerFlag }
+            else { flags &= ~CharData.tabFillerFlag }
+        }
+    }
     
     /// The color and character attributes for the cell
     public var attribute: Attribute
@@ -267,7 +279,7 @@ public struct CharData: CustomDebugStringConvertible {
         self.code = code
         width = size
         payload = TinyAtom.empty
-        unused = 0
+        flags = 0
     }
     
     init (attribute: Attribute, scalar: UnicodeScalar, size: Int8 = 1) {

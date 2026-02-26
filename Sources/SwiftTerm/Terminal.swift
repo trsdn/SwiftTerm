@@ -833,8 +833,10 @@ open class Terminal {
         if buffer === normalBuffer {
             return
         }
-        normalBuffer.x = altBuffer.x
-        normalBuffer.y = altBuffer.y
+        
+        // Do not copy cursor position from the alt buffer to the normal buffer.
+        // Each buffer maintains its own independent cursor state per the xterm spec.
+        // For mode 1049, cmdRestoreCursor will restore the saved cursor afterward.
         
         // The alt buffer should always be cleared when we switch to the normal
         // buffer. This frees up memory since the alt buffer should always be new
@@ -1674,7 +1676,15 @@ open class Terminal {
     //
     func cmdTab ()
     {
+        let oldX = buffer.x
         buffer.x = buffer.nextTabStop (marginMode: marginMode)
+        // Mark skipped cells as tab fillers so copy/paste can reconstruct tabs
+        let line = buffer.lines [buffer.y + buffer.yBase]
+        for i in oldX..<buffer.x {
+            var cd = line [i]
+            cd.isTabFiller = true
+            line [i] = cd
+        }
     }
 
     // SO

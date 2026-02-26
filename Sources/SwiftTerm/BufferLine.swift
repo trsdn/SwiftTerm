@@ -304,15 +304,29 @@ public final class BufferLine: CustomDebugStringConvertible {
         let limit = max(ec, startCol)
         if !skipNullCellsFollowingWide {
             var result = ""
-            for i in startCol..<limit {
+            var i = startCol
+            while i < limit {
+                if data [i].isTabFiller {
+                    result.append ("\t")
+                    // Skip remaining consecutive tab-filler cells
+                    while i < limit && data [i].isTabFiller { i += 1 }
+                    continue
+                }
                 let character = characterProvider?(data [i]) ?? data [i].getCharacter ()
                 result.append (character)
+                i += 1
             }
             return result
         }
         var result = ""
         var idx = startCol
         while idx < limit {
+            if data [idx].isTabFiller {
+                result.append ("\t")
+                // Skip remaining consecutive tab-filler cells
+                while idx < limit && data [idx].isTabFiller { idx += 1 }
+                continue
+            }
             if idx > 0 && data [idx].code == 0 && data [idx-1].width == 2 {
                 idx += 1
                 continue
