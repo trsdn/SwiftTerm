@@ -209,13 +209,11 @@ public class MetalTerminalRenderer: TerminalRenderer {
         self.terminalView = view
 
         // Configure CAMetalLayer on the view's layer
-        guard let viewLayer = view.layer else {
+        if view.layer == nil {
             view.wantsLayer = true
-            guard let newLayer = view.layer else {
-                fatalError("MetalTerminalRenderer: failed to get layer from view")
-            }
-            setupMetalLayer(on: newLayer, size: view.bounds.size)
-            return
+        }
+        guard let viewLayer = view.layer else {
+            fatalError("MetalTerminalRenderer: failed to get layer from view")
         }
         setupMetalLayer(on: viewLayer, size: view.bounds.size)
 
@@ -229,19 +227,25 @@ public class MetalTerminalRenderer: TerminalRenderer {
         cellDimensions: CellDimensions,
         bufferOffset: Int
     ) {
-        self.cellDims = cellDimensions
+         self.cellDims = cellDimensions
 
         guard let view = terminalView else { return }
         let terminal = view.terminal!
 
-        // Update viewport size
+        // Update Metal layer frame and drawable size to match view
         let backingScale = view.window?.backingScaleFactor ?? 1.0
         let drawableWidth = view.bounds.width * backingScale
         let drawableHeight = view.bounds.height * backingScale
         viewportSize = CGSize(width: drawableWidth, height: drawableHeight)
 
-        metalLayer?.drawableSize = CGSize(width: drawableWidth, height: drawableHeight)
-        metalLayer?.contentsScale = backingScale
+        if let ml = metalLayer {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            ml.frame = view.bounds
+            ml.drawableSize = CGSize(width: drawableWidth, height: drawableHeight)
+            ml.contentsScale = backingScale
+            CATransaction.commit()
+        }
 
         // Populate cell buffer from terminal state
         let displayBuffer = terminal.buffer
