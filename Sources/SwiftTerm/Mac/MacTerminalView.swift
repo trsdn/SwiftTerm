@@ -2371,4 +2371,82 @@ extension TerminalViewDelegate {
     public func iTermContent (source: TerminalView, content: ArraySlice<UInt8>) {
     }
 }
+
+// MARK: - Accessibility / VoiceOver support
+extension TerminalView {
+    open override func isAccessibilityElement() -> Bool {
+        return true
+    }
+
+    open override func accessibilityRole() -> NSAccessibility.Role? {
+        return .textArea
+    }
+
+    open override func accessibilityRoleDescription() -> String? {
+        return NSAccessibility.Role.textArea.description(with: nil)
+    }
+
+    open override func accessibilityLabel() -> String? {
+        return "Terminal"
+    }
+
+    open override func accessibilityValue() -> Any? {
+        return getVisibleTerminalText()
+    }
+
+    open override func isAccessibilityEnabled() -> Bool {
+        return true
+    }
+
+    open override func isAccessibilityFocused() -> Bool {
+        return window?.firstResponder == self
+    }
+
+    open override func accessibilityNumberOfCharacters() -> Int {
+        return (getVisibleTerminalText()).count
+    }
+
+    open override func accessibilitySelectedText() -> String? {
+        return getSelection()
+    }
+
+    open override func accessibilitySelectedTextRange() -> NSRange {
+        guard selection.active,
+              let text = getSelection() else {
+            let full = getVisibleTerminalText()
+            let pos = full.count
+            return NSRange(location: pos, length: 0)
+        }
+        let fullText = getVisibleTerminalText()
+        if let range = fullText.range(of: text) {
+            let loc = fullText.distance(from: fullText.startIndex, to: range.lowerBound)
+            return NSRange(location: loc, length: text.count)
+        }
+        return NSRange(location: 0, length: 0)
+    }
+
+    open override func accessibilityInsertionPointLineNumber() -> Int {
+        return terminal?.buffer.y ?? 0
+    }
+
+    open override func accessibilityVisibleCharacterRange() -> NSRange {
+        let text = getVisibleTerminalText()
+        return NSRange(location: 0, length: text.count)
+    }
+
+    open override func accessibilityString(for range: NSRange) -> String? {
+        let text = getVisibleTerminalText()
+        guard let swiftRange = Range(range, in: text) else { return nil }
+        return String(text[swiftRange])
+    }
+
+    private func getVisibleTerminalText() -> String {
+        guard let terminal = terminal else { return "" }
+        let rows = terminal.rows
+        let cols = terminal.cols
+        let start = Position(col: 0, row: 0)
+        let end = Position(col: cols - 1, row: rows - 1)
+        return terminal.getDisplayText(start: start, end: end)
+    }
+}
 #endif
