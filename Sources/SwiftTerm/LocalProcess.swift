@@ -86,6 +86,14 @@ public class LocalProcess {
     
     var io: DispatchIO?
     
+    // Coordinated termination state – both flags must be true before
+    // the delegate's processTerminated is called, ensuring all output
+    // has been delivered first.  Accessed only from `dispatchQueue`.
+    private var processHasExited = false
+    private var pendingExitCode: Int32? = nil
+    private var readReachedEOF = false
+    private var terminationDelivered = false
+    
     #if canImport(Subprocess)
     // Swift Subprocess related properties
     private var subprocessTask: Task<Void, Error>?
@@ -192,11 +200,13 @@ public class LocalProcess {
         
         if data.count == 0 {
             childfd = -1
-            if running {
-                // Keep process monitor alive so the exit event can still deliver
-                // processTerminated to clients when PTY EOF arrives first.
-                childStopped(cancelProcessMonitor: false)
-                // delegate.processTerminated (self, exitCode: nil)
+            dispatchQueue.async { [weak self] in
+                guard let self = self else { return }
+                self.readReachedEOF = true
+                if !self.processHasExited && self.running {
+                    self.childStopped(cancelProcessMonitor: false)
+                }
+                self.deliverTerminationIfReady()
             }
             return
         }
@@ -236,8 +246,19 @@ public class LocalProcess {
     {
         var n: Int32 = 0
         waitpid (shellPid, &n, WNOHANG)
-        delegate?.processTerminated(self, exitCode: n)
+        processHasExited = true
+        pendingExitCode = n
+        deliverTerminationIfReady()
+    }
+    
+    /// Delivers the `processTerminated` delegate callback only after both
+    /// the process exit has been detected *and* the I/O channel has reached
+    /// EOF, ensuring all output data is delivered before termination.
+    private func deliverTerminationIfReady() {
+        guard processHasExited, readReachedEOF, !terminationDelivered else { return }
+        terminationDelivered = true
         childStopped()
+        delegate?.processTerminated(self, exitCode: pendingExitCode)
     }
 
     /// Indicates if the child process is currently running
@@ -255,6 +276,12 @@ public class LocalProcess {
         if running {
             return
         }
+        
+        // Reset coordinated termination state
+        processHasExited = false
+        pendingExitCode = nil
+        readReachedEOF = false
+        terminationDelivered = false
         
         #if canImport(Subprocess)
         startProcessWithSubprocess(executable: executable, args: args, environment: environment, execName: execName, currentDirectory: currentDirectory)
@@ -331,23 +358,29 @@ public class LocalProcess {
                         error: .fileDescriptor(slaveFileDescriptor, closeAfterSpawningProcess: false)
                     )
                     
-                    // Process completed
-                    await MainActor.run {
-                        childStopped()
-                        let exitCode: Int32?
-                        switch result.terminationStatus {
-                        case .exited(let code):
-                            exitCode = code
-                        default:
-                            exitCode = nil
-                        }
-                        self.delegate?.processTerminated(self, exitCode: exitCode)
+                    // Process completed – record exit code and let the
+                    // I/O EOF handler deliver processTerminated after all
+                    // remaining output has been read.
+                    let exitCode: Int32?
+                    switch result.terminationStatus {
+                    case .exited(let code):
+                        exitCode = code
+                    default:
+                        exitCode = nil
+                    }
+                    self.dispatchQueue.async { [weak self] in
+                        guard let self = self else { return }
+                        self.processHasExited = true
+                        self.pendingExitCode = exitCode
+                        self.deliverTerminationIfReady()
                     }
 
                 } catch {
-                    await MainActor.run {
-                        childStopped()
-                        self.delegate?.processTerminated(self, exitCode: nil)
+                    self.dispatchQueue.async { [weak self] in
+                        guard let self = self else { return }
+                        self.processHasExited = true
+                        self.readReachedEOF = true
+                        self.deliverTerminationIfReady()
                     }
                     print("Failed to start process with swift-subprocess: \(error)")
                 }
