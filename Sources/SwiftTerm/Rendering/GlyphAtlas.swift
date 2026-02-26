@@ -239,6 +239,11 @@ public class GlyphAtlas {
             let scale = rasterScale
             cgContext.scaleBy(x: scale, y: scale)
 
+            // Enable anti-aliasing and font smoothing for quality matching native rendering
+            cgContext.setAllowsAntialiasing(true)
+            cgContext.setShouldAntialias(true)
+            cgContext.setShouldSmoothFonts(true)
+
             // Clear to black (transparent in our shader)
             cgContext.setFillColor(CGColor(gray: 0, alpha: 1))
             cgContext.fill(CGRect(x: 0, y: 0, width: CGFloat(rasterWidth) / scale, height: CGFloat(rasterHeight) / scale))
