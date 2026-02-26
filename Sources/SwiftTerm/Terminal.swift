@@ -221,6 +221,17 @@ public protocol TerminalDelegate: AnyObject {
      *  - report: the parsed progress report
      */
     func progressReport(source: Terminal, report: Terminal.ProgressReport)
+
+    /**
+     * Invoked when a semantic prompt boundary marker (OSC 133) is received.
+     * This allows the UI to track prompt, input, and output regions.
+     *
+     * The default implementation does nothing.
+     * - Parameters:
+     *  - source: identifies the instance of the terminal that sent this request
+     *  - event: the semantic prompt event that occurred
+     */
+    func semanticPromptChanged(source: Terminal, event: Terminal.SemanticPromptEvent)
     
     /**
      * Invoked to create an image from an RGBA buffer at the current cursor position
@@ -301,6 +312,52 @@ open class Terminal {
         public init(state: ProgressReportState, progress: UInt8?) {
             self.state = state
             self.progress = progress
+        }
+    }
+
+    // MARK: - Semantic Prompt (OSC 133)
+
+    /// The type of a semantic prompt zone, corresponding to the OSC 133 markers.
+    public enum SemanticPromptZoneType: Equatable {
+        /// The prompt region (between A and B markers)
+        case prompt
+        /// The command input region (between B and C markers)
+        case input
+        /// The command output region (between C and D/next-A markers)
+        case output
+    }
+
+    /// Represents a semantic prompt event received via OSC 133.
+    public enum SemanticPromptEvent: Equatable {
+        /// Prompt started (OSC 133;A)
+        case promptStart
+        /// Command input started (OSC 133;B)
+        case inputStart
+        /// Command output started (OSC 133;C)
+        case outputStart
+        /// Command finished (OSC 133;D) with optional exit code
+        case commandFinished(exitCode: Int?)
+    }
+
+    /// A zone representing a semantic region identified by OSC 133 markers.
+    public struct SemanticPromptZone: Equatable {
+        /// The type of this zone
+        public let type: SemanticPromptZoneType
+        /// The absolute row where this zone starts (buffer-relative, includes scrollback)
+        public let startRow: Int
+        /// The column where this zone starts
+        public let startCol: Int
+        /// The absolute row where this zone ends, nil if not yet closed
+        public var endRow: Int?
+        /// The column where this zone ends
+        public var endCol: Int?
+        /// The exit code for output zones (from D marker), nil if not applicable
+        public var exitCode: Int?
+
+        public init(type: SemanticPromptZoneType, startRow: Int, startCol: Int) {
+            self.type = type
+            self.startRow = startRow
+            self.startCol = startCol
         }
     }
 
@@ -452,6 +509,10 @@ open class Terminal {
     /// (see the `isProcessTrusted` method in the `TerminalDelegate`).  When this is set the
     /// `hostCurrentDocumentUpdated` method on the delegate is invoked.
     public private(set) var hostCurrentDocument: String? = nil
+    
+    /// The semantic prompt zones collected from OSC 133 markers, ordered chronologically.
+    /// Each zone represents a prompt, input, or output region.
+    public private(set) var semanticPromptZones: [SemanticPromptZone] = []
     
     /// The current attribute used by the terminal by default
     public var currentAttribute: Attribute {
@@ -1807,6 +1868,76 @@ open class Terminal {
         }
 
         return ProgressReport(state: state, progress: progress)
+    }
+
+    // OSC 133 - Semantic Prompts
+    // See: https://gitlab.freedesktop.org/Per_Bothner/specifications/blob/master/proposals/semantic-prompts.md
+    //
+    // Markers:
+    //   A - Prompt start (fresh line + prompt region begins)
+    //   B - Command start (end of prompt, user input begins)
+    //   C - Command output start (command has been submitted, output follows)
+    //   D;exitcode - Command finished with exit code
+    //
+    func oscSemanticPrompt (_ data: ArraySlice<UInt8>) {
+        guard let text = String(bytes: data, encoding: .utf8), !text.isEmpty else {
+            return
+        }
+
+        let parts = text.split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)
+        guard let marker = parts.first, marker.count == 1 else {
+            return
+        }
+
+        let buf = buffer
+        let absRow = buf.y + buf.yBase
+        let col = buf.x
+
+        let event: SemanticPromptEvent
+
+        switch marker {
+        case "A":
+            // Close the last open zone
+            closeLastOpenZone(atRow: absRow, col: col)
+            // Start a new prompt zone
+            semanticPromptZones.append(SemanticPromptZone(type: .prompt, startRow: absRow, startCol: col))
+            event = .promptStart
+
+        case "B":
+            closeLastOpenZone(atRow: absRow, col: col)
+            semanticPromptZones.append(SemanticPromptZone(type: .input, startRow: absRow, startCol: col))
+            event = .inputStart
+
+        case "C":
+            closeLastOpenZone(atRow: absRow, col: col)
+            semanticPromptZones.append(SemanticPromptZone(type: .output, startRow: absRow, startCol: col))
+            event = .outputStart
+
+        case "D":
+            var exitCode: Int? = nil
+            if parts.count > 1, let code = Int(parts[1]) {
+                exitCode = code
+            }
+            // Close the last open zone and annotate with exit code if it was an output zone
+            if !semanticPromptZones.isEmpty && semanticPromptZones[semanticPromptZones.count - 1].endRow == nil {
+                semanticPromptZones[semanticPromptZones.count - 1].endRow = absRow
+                semanticPromptZones[semanticPromptZones.count - 1].endCol = col
+                semanticPromptZones[semanticPromptZones.count - 1].exitCode = exitCode
+            }
+            event = .commandFinished(exitCode: exitCode)
+
+        default:
+            return
+        }
+
+        tdel?.semanticPromptChanged(source: self, event: event)
+    }
+
+    private func closeLastOpenZone(atRow row: Int, col: Int) {
+        if !semanticPromptZones.isEmpty && semanticPromptZones[semanticPromptZones.count - 1].endRow == nil {
+            semanticPromptZones[semanticPromptZones.count - 1].endRow = row
+            semanticPromptZones[semanticPromptZones.count - 1].endCol = col
+        }
     }
 
     // OSC 1337 is used by iTerm2 for imgcat and other things:
@@ -6015,6 +6146,9 @@ public extension TerminalDelegate {
     }
 
     func progressReport(source: Terminal, report: Terminal.ProgressReport) {
+    }
+
+    func semanticPromptChanged(source: Terminal, event: Terminal.SemanticPromptEvent) {
     }
     
     func createImageFromBitmap (source: Terminal, bytes: inout [UInt8], width: Int, height: Int){
