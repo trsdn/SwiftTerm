@@ -112,6 +112,9 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     var attributes: [Attribute: [NSAttributedString.Key:Any]] = [:]
     var urlAttributes: [Attribute: [NSAttributedString.Key:Any]] = [:]
     
+    // Blink state: toggled by a timer to animate blinking text (SGR 5)
+    var blinkOn: Bool = true
+    private var blinkTimer: Timer?
     
     // Cache for the colors in the 0..255 range
     var colors: [NSColor?] = Array(repeating: nil, count: 256)
@@ -177,6 +180,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         setupOptions()
         setupProgressBar()
         setupFocusNotification()
+        startBlinkTimer()
     }
     
     func startDisplayUpdates ()
@@ -189,6 +193,17 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         // Not used on Mac
     }
     
+    private func startBlinkTimer() {
+        blinkTimer = Timer.scheduledTimer(withTimeInterval: 0.53, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            self.blinkOn.toggle()
+            // Invalidate cached attributes for blink cells
+            self.attributes = self.attributes.filter { !$0.key.style.contains(.blink) }
+            self.urlAttributes = self.urlAttributes.filter { !$0.key.style.contains(.blink) }
+            self.setNeedsDisplay(self.bounds)
+        }
+    }
+    
     var becomeMainObserver, resignMainObserver: NSObjectProtocol?
     
     deinit {
@@ -199,6 +214,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
             NotificationCenter.default.removeObserver (resignMainObserver)
         }
         progressReportTimer?.invalidate()
+        blinkTimer?.invalidate()
     }
     
     func setupFocusNotification() {

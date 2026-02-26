@@ -48,7 +48,7 @@ public extension Notification.Name {
  * Use the `configureNativeColors()` to set the defaults colors for the view to match the OS
  * defaults, otherwise, this uses its own set of defaults colors.
  */
-open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollViewDelegate, TerminalDelegate {
+open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollViewDelegate, TerminalDelegate, UIPointerInteractionDelegate {
     public static var textInputDebugEnabled: Bool = false
     internal static var textInputLogCounter: Int = 0
 
@@ -127,6 +127,26 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
      * does not do anything, and selection and panning are still processed.
      */
     public var allowMouseReporting: Bool = true
+
+    /// Controls if link reporting should use explicit hyperlinks or implicit detection.
+    public var linkReporting: LinkReporting = .implicit
+
+    /// Controls how explicit links are underlined.
+    public var linkHighlightMode: LinkHighlightMode = .hover {
+        didSet {
+            linkHighlightRange = nil
+            terminal.updateFullScreen()
+            queuePendingDisplay()
+        }
+    }
+
+    private var lastReportedLink: String?
+    var commandActive = false
+    private var activeCommandKeys: Set<UIKeyboardHIDUsage> = []
+    private var pointerInteraction: UIPointerInteraction?
+    private var hoverGesture: UIHoverGestureRecognizer?
+    var linkHighlightRange: (row: Int, range: Range<Int>)?
+    private var lastPointerLocation: CGPoint?
     
     /**
      * If set, this turns Option-letter keystrokes into an escape + keystroke combination
@@ -171,6 +191,8 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     var attributes: [Attribute: [NSAttributedString.Key:Any]] = [:]
     var urlAttributes: [Attribute: [NSAttributedString.Key:Any]] = [:]
 
+    // Blink state: toggled by a timer to animate blinking text (SGR 5)
+    var blinkOn: Bool = true
     // Timer to display the terminal buffer
     var link: CADisplayLink!
     // Cache for the colors in the 0..255 range
@@ -259,6 +281,7 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         setupOptions ()
         setupProgressBar()
         setupGestures ()
+        setupLinkReportingInteractions()
         setupAccessoryView ()
     }
 
@@ -500,6 +523,11 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     /// - Returns: both the position where the event took place (either in screen resolution, or buffer relative) and the pixel position to construct the menu location
     func calculateTapHit (gesture: UIGestureRecognizer) -> (grid: Position, pixels: Position)
     {
+        return calculateTapHit(point: gesture.location(in: self))
+    }
+
+    func calculateTapHit (point: CGPoint) -> (grid: Position, pixels: Position)
+    {
         func toInt (_ p: CGPoint) -> Position {
             
             let x = min (max (p.x, 0), bounds.width)
@@ -507,7 +535,6 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
             return Position (col: Int (x), row: Int (y))
         }
 
-        let point = gesture.location(in: self)
         let col = Int (point.x / cellDimension.width)
         let row = Int (point.y / cellDimension.height)
         if row < 0 {
@@ -560,7 +587,13 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
             if gestureRecognizer.state != .ended {
                 return
             }
-            
+
+            let tapHit = calculateTapHit(gesture: gestureRecognizer).grid
+            if let result = linkForClick(at: tapHit, modifiers: commandActive ? [.command] : []) {
+                terminalDelegate?.requestOpenLink(source: self, link: result.link, params: result.params)
+                return
+            }
+
             if allowMouseReporting && terminal.mouseMode.sendButtonPress() {
                 sharedMouseEvent(gestureRecognizer: gestureRecognizer, release: false)
 
@@ -882,6 +915,184 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
 
         singleTap.require(toFail: doubleTap)
         doubleTap.require(toFail: tripleTap)
+    }
+
+    func setupLinkReportingInteractions ()
+    {
+        if #available(iOS 13.4, visionOS 1.0, *) {
+            let interaction = UIPointerInteraction(delegate: self)
+            addInteraction(interaction)
+            pointerInteraction = interaction
+        }
+        if #available(iOS 13.0, visionOS 1.0, *) {
+            let hover = UIHoverGestureRecognizer(target: self, action: #selector(handleHover(_:)))
+            addGestureRecognizer(hover)
+            hoverGesture = hover
+        }
+    }
+
+    @available(iOS 13.4, visionOS 1.0, *)
+    public func pointerInteraction(_ interaction: UIPointerInteraction, regionFor request: UIPointerRegionRequest, defaultRegion: UIPointerRegion) -> UIPointerRegion?
+    {
+        lastPointerLocation = request.location
+        reportLinkIfNeeded(at: request.location, modifiers: request.modifiers, force: false)
+        updateLinkHighlightIfNeeded(at: request.location, modifiers: request.modifiers, force: false)
+        return nil
+    }
+
+    @objc func handleHover (_ gestureRecognizer: UIHoverGestureRecognizer)
+    {
+        switch gestureRecognizer.state {
+        case .began, .changed:
+            let location = gestureRecognizer.location(in: self)
+            lastPointerLocation = location
+            reportLinkIfNeeded(at: location, modifiers: [], force: true)
+            updateLinkHighlightIfNeeded(at: location, modifiers: [.command], force: true)
+        case .ended, .cancelled:
+            lastReportedLink = nil
+            if linkHighlightMode == .hover || linkHighlightMode == .hoverWithModifier {
+                let oldRange = linkHighlightRange
+                linkHighlightRange = nil
+                invalidateLinkHighlight(oldRange: oldRange, newRange: nil)
+                queuePendingDisplay()
+            }
+        default:
+            break
+        }
+    }
+
+    private func reportLinkIfNeeded(at point: CGPoint, modifiers: UIKeyModifierFlags, force: Bool)
+    {
+        guard linkReporting != .none else {
+            lastReportedLink = nil
+            return
+        }
+        if !force && !commandActive && !modifiers.contains(.command) {
+            return
+        }
+        let hit = calculateTapHit(point: point).grid
+        let mode: Terminal.LinkLookupMode = linkReporting == .explicit ? .explicitOnly : .explicitAndImplicit
+        let link = terminal.link(at: .buffer(hit), mode: mode)
+        if link != lastReportedLink {
+            lastReportedLink = link
+        }
+    }
+
+    private func linkVisibleForClick(match: Terminal.LinkMatch, modifiers: UIKeyModifierFlags) -> Bool
+    {
+        let hasModifier = commandActive || modifiers.contains(.command)
+        switch linkHighlightMode {
+        case .always:
+            return match.isExplicit
+        case .alwaysWithModifier:
+            return match.isExplicit && hasModifier
+        case .hover:
+            return linkHighlightRange?.row == match.row && linkHighlightRange?.range == match.range
+        case .hoverWithModifier:
+            return hasModifier && linkHighlightRange?.row == match.row && linkHighlightRange?.range == match.range
+        }
+    }
+
+    private func payloadString(at position: Position) -> String?
+    {
+        let buffer = terminal.displayBuffer
+        guard position.row >= 0 && position.row < buffer.lines.count else {
+            return nil
+        }
+        let line = buffer.lines[position.row]
+        let maxCol = max(0, min(terminal.cols - 1, line.count - 1))
+        let col = max(0, min(position.col, maxCol))
+        let cell = line[col]
+        if let payload = cell.getPayload() as? String {
+            return payload
+        }
+        if cell.code == 0 && col > 0 && line[col - 1].width == 2 {
+            let base = line[col - 1]
+            if let payload = base.getPayload() as? String {
+                return payload
+            }
+        }
+        return nil
+    }
+
+    private func urlAndParamsFrom(payload: String) -> (String, [String:String])?
+    {
+        let split = payload.split(separator: ";", maxSplits: Int.max, omittingEmptySubsequences: false)
+        if split.count > 1 {
+            let pairs = split[0].split(separator: ":")
+            var params: [String:String] = [:]
+            for p in pairs {
+                let kv = p.split(separator: "=")
+                if kv.count == 2 {
+                    params[String(kv[0])] = String(kv[1])
+                }
+            }
+            return (String(split[1]), params)
+        }
+        return nil
+    }
+
+    private func linkForClick(at position: Position, modifiers: UIKeyModifierFlags) -> (link: String, params: [String:String])?
+    {
+        guard let match = terminal.linkMatch(at: .buffer(position), mode: .explicitAndImplicit) else {
+            return nil
+        }
+        guard linkVisibleForClick(match: match, modifiers: modifiers) else {
+            return nil
+        }
+        if match.isExplicit, let payload = payloadString(at: position), let (url, params) = urlAndParamsFrom(payload: payload) {
+            return (url, params)
+        }
+        return (match.text, [:])
+    }
+
+    private func invalidateLinkHighlight(oldRange: (row: Int, range: Range<Int>)?, newRange: (row: Int, range: Range<Int>)?)
+    {
+        if let oldRange {
+            invalidateLinkHighlightRow(oldRange.row)
+        }
+        if let newRange, newRange.row != oldRange?.row {
+            invalidateLinkHighlightRow(newRange.row)
+        }
+    }
+
+    private func invalidateLinkHighlightRow(_ bufferRow: Int)
+    {
+        let displayBuffer = terminal.displayBuffer
+        let screenRow = bufferRow - displayBuffer.yDisp
+        guard screenRow >= 0 && screenRow < terminal.rows else {
+            return
+        }
+        terminal.updateRange(borrowing: displayBuffer, screenRow)
+    }
+
+    private func updateLinkHighlightIfNeeded(at point: CGPoint, modifiers: UIKeyModifierFlags, force: Bool)
+    {
+        if linkHighlightMode == .always || linkHighlightMode == .alwaysWithModifier {
+            return
+        }
+        let requiresModifier = linkHighlightMode == .hoverWithModifier
+        if requiresModifier && !commandActive && !modifiers.contains(.command) {
+            if linkHighlightRange != nil {
+                let oldRange = linkHighlightRange
+                linkHighlightRange = nil
+                invalidateLinkHighlight(oldRange: oldRange, newRange: nil)
+                queuePendingDisplay()
+            }
+            return
+        }
+        if !force && !commandActive && !modifiers.contains(.command) && linkHighlightMode == .hoverWithModifier {
+            return
+        }
+        let hit = calculateTapHit(point: point).grid
+        let match = terminal.linkMatch(at: .buffer(hit), mode: .explicitAndImplicit)
+        let newRange = match.map { (row: $0.row, range: $0.range) }
+        if newRange?.row != linkHighlightRange?.row || newRange?.range != linkHighlightRange?.range {
+            let oldRange = linkHighlightRange
+            linkHighlightRange = newRange
+            invalidateLinkHighlight(oldRange: oldRange, newRange: newRange)
+            queuePendingDisplay()
+        }
     }
     
     var _inputAccessory: UIView?
@@ -2112,6 +2323,33 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     public override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         keyRepeat?.invalidate()
         keyRepeat = nil
+        let wasCommandActive = commandActive
+        for press in presses {
+            guard let key = press.key else { continue }
+            switch key.keyCode {
+            case .keyboardLeftGUI, .keyboardRightGUI:
+                activeCommandKeys.remove(key.keyCode)
+            default:
+                break
+            }
+        }
+        commandActive = !activeCommandKeys.isEmpty
+        if !commandActive {
+            lastReportedLink = nil
+            if linkHighlightMode == .hoverWithModifier {
+                let oldRange = linkHighlightRange
+                linkHighlightRange = nil
+                invalidateLinkHighlight(oldRange: oldRange, newRange: nil)
+            }
+        }
+        if commandActive != wasCommandActive {
+            if linkHighlightMode == .alwaysWithModifier {
+                terminal.updateFullScreen()
+            }
+            if linkHighlightMode == .alwaysWithModifier || linkHighlightMode == .hoverWithModifier {
+                queuePendingDisplay()
+            }
+        }
         let flags = terminal.keyboardEnhancementFlags
         if flags.contains(.reportEvents) {
             for press in presses {

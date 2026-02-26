@@ -444,6 +444,10 @@ extension TerminalView {
             nsattr [.strikethroughColor] = fgColor
             nsattr [.strikethroughStyle] = NSUnderlineStyle.single.rawValue
         }
+        // Blink: hide text by setting foreground to background during the off phase
+        if flags.contains (.blink) && !blinkOn {
+            nsattr [.foregroundColor] = nsattr [.backgroundColor]!
+        }
 
         if withUrl {
             nsattr [.underlineStyle] = NSUnderlineStyle.single.rawValue | NSUnderlineStyle.patternDash.rawValue
