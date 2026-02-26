@@ -438,7 +438,7 @@ open class Terminal {
     private var originMode: Bool = false
     
     /// Controls whether it is possible to set left and right margin modes
-    var marginMode: Bool = false
+    private var marginMode: Bool = false
     
     private var insertMode: Bool = false
     
@@ -2683,6 +2683,28 @@ open class Terminal {
         setgCharset (ch, charset: charset)
     }
 
+    // Handle multi-byte charset designators (e.g., ESC ( % 6 for Portuguese)
+    func selectMultiByteCharset (_ intermediate: UInt8, secondPrefix: UInt8, code: UInt8)
+    {
+        let key = CharSets.multiByteKey(secondPrefix, code)
+        let charset = CharSets.multiByte[key]
+        
+        var ch: UInt8
+        switch intermediate {
+        case UInt8 (ascii: "("):
+            ch = 0
+        case UInt8 (ascii: ")"), UInt8 (ascii: "-"):
+            ch = 1
+        case UInt8 (ascii: "*"), UInt8 (ascii: "."):
+            ch = 2
+        case UInt8 (ascii: "+"), UInt8 (ascii: "/"):
+            ch = 3
+        default:
+            return
+        }
+        setgCharset (ch, charset: charset)
+    }
+
     func setLineRenderMode (to: BufferLine.RenderLineMode) {
         buffer.lines [buffer.y + buffer.yBase].renderMode = to
         updateRange (buffer.y)
@@ -3272,6 +3294,15 @@ open class Terminal {
         buffer.savedOriginMode = originMode
         buffer.savedMarginMode = marginMode
         buffer.savedReverseWraparound = reverseWraparound
+    }
+
+    // Dispatches CSI s: set margins if marginMode is on, otherwise save cursor
+    func cmdSaveOrSetMargins(_ pars: [Int], _ collect: cstring) {
+        if marginMode {
+            cmdSetMargins(pars, collect)
+        } else {
+            cmdSaveCursor(pars, collect)
+        }
     }
 
     //

@@ -11,6 +11,10 @@ import Foundation
 class CharSets {
     public static let all: [UInt8:[UInt8:String]] = initAll ()
     
+    // Multi-byte charset designators (e.g., ESC ( % 6 for Portuguese)
+    // Keyed by the secondary prefix + charset byte (e.g., "%" + "6")
+    public static let multiByte: [UInt16:[UInt8:String]] = initMultiByte ()
+    
     // This is the "B" charset, null
     public static var defaultCharset: [UInt8:String]? = nil
     
@@ -257,6 +261,123 @@ class CharSets {
             Character("}").asciiValue!: "ü",
             Character("~").asciiValue!: "û"
         ]
+
+        /**
+         * DEC Technical character set
+         * ESC (>
+         * Reference: xterm charsets.c / VT330 Programmer Reference
+         */
+        all [Character(">").asciiValue!] = [
+            Character("!").asciiValue!: "\u{23b7}",  // ⎷ RADICAL SYMBOL BOTTOM
+            Character("\"").asciiValue!: "\u{250c}",  // ┌ BOX DRAWINGS LIGHT DOWN AND RIGHT
+            Character("#").asciiValue!: "\u{2500}",  // ─ BOX DRAWINGS LIGHT HORIZONTAL
+            Character("$").asciiValue!: "\u{2320}",  // ⌠ TOP HALF INTEGRAL
+            Character("%").asciiValue!: "\u{2321}",  // ⌡ BOTTOM HALF INTEGRAL
+            Character("&").asciiValue!: "\u{2502}",  // │ BOX DRAWINGS LIGHT VERTICAL
+            Character("'").asciiValue!: "\u{23a1}",  // ⎡ LEFT SQUARE BRACKET UPPER CORNER
+            Character("(").asciiValue!: "\u{23a3}",  // ⎣ LEFT SQUARE BRACKET LOWER CORNER
+            Character(")").asciiValue!: "\u{23a4}",  // ⎤ RIGHT SQUARE BRACKET UPPER CORNER
+            Character("*").asciiValue!: "\u{23a6}",  // ⎦ RIGHT SQUARE BRACKET LOWER CORNER
+            Character("+").asciiValue!: "\u{23a7}",  // ⎧ LEFT CURLY BRACKET UPPER HOOK
+            Character(",").asciiValue!: "\u{23a9}",  // ⎩ LEFT CURLY BRACKET LOWER HOOK
+            Character("-").asciiValue!: "\u{23ab}",  // ⎫ RIGHT CURLY BRACKET UPPER HOOK
+            Character(".").asciiValue!: "\u{23ad}",  // ⎭ RIGHT CURLY BRACKET LOWER HOOK
+            Character("/").asciiValue!: "\u{23a8}",  // ⎨ LEFT CURLY BRACKET MIDDLE PIECE
+            Character("0").asciiValue!: "\u{23ac}",  // ⎬ RIGHT CURLY BRACKET MIDDLE PIECE
+            Character("?").asciiValue!: "\u{2260}",  // ≠ NOT EQUAL TO
+            Character("O").asciiValue!: "\u{2261}",  // ≡ IDENTICAL TO
+            Character("P").asciiValue!: "\u{2264}",  // ≤ LESS-THAN OR EQUAL TO
+            Character("Q").asciiValue!: "\u{2265}",  // ≥ GREATER-THAN OR EQUAL TO
+            Character("R").asciiValue!: "\u{222b}",  // ∫ INTEGRAL
+            Character("S").asciiValue!: "\u{2234}",  // ∴ THEREFORE
+            Character("T").asciiValue!: "\u{221d}",  // ∝ PROPORTIONAL TO
+            Character("U").asciiValue!: "\u{221e}",  // ∞ INFINITY
+            Character("V").asciiValue!: "\u{00f7}",  // ÷ DIVISION SIGN
+            Character("W").asciiValue!: "\u{0394}",  // Δ GREEK CAPITAL LETTER DELTA
+            Character("X").asciiValue!: "\u{2207}",  // ∇ NABLA
+            Character("Y").asciiValue!: "\u{03a6}",  // Φ GREEK CAPITAL LETTER PHI
+            Character("Z").asciiValue!: "\u{0393}",  // Γ GREEK CAPITAL LETTER GAMMA
+            Character("[").asciiValue!: "\u{223c}",  // ∼ TILDE OPERATOR
+            Character("\\").asciiValue!: "\u{2243}",  // ≃ ASYMPTOTICALLY EQUAL TO
+            Character("]").asciiValue!: "\u{0398}",  // Θ GREEK CAPITAL LETTER THETA
+            Character("^").asciiValue!: "\u{00d7}",  // × MULTIPLICATION SIGN
+            Character("_").asciiValue!: "\u{039b}",  // Λ GREEK CAPITAL LETTER LAMDA
+            Character("`").asciiValue!: "\u{21d4}",  // ⇔ LEFT RIGHT DOUBLE ARROW
+            Character("a").asciiValue!: "\u{21d2}",  // ⇒ RIGHTWARDS DOUBLE ARROW
+            Character("b").asciiValue!: "\u{2228}",  // ∨ LOGICAL OR
+            Character("c").asciiValue!: "\u{2227}",  // ∧ LOGICAL AND
+            Character("d").asciiValue!: "\u{2203}",  // ∃ THERE EXISTS
+            Character("e").asciiValue!: "\u{2200}",  // ∀ FOR ALL
+            Character("f").asciiValue!: "\u{2135}",  // ℵ ALEF SYMBOL
+            Character("g").asciiValue!: "\u{039e}",  // Ξ GREEK CAPITAL LETTER XI
+            Character("h").asciiValue!: "\u{03a8}",  // Ψ GREEK CAPITAL LETTER PSI
+            Character("i").asciiValue!: "\u{03a9}",  // Ω GREEK CAPITAL LETTER OMEGA
+            Character("j").asciiValue!: "\u{03a0}",  // Π GREEK CAPITAL LETTER PI
+            Character("k").asciiValue!: "\u{03a3}",  // Σ GREEK CAPITAL LETTER SIGMA
+            Character("n").asciiValue!: "\u{2282}",  // ⊂ SUBSET OF
+            Character("o").asciiValue!: "\u{2283}",  // ⊃ SUPERSET OF
+            Character("p").asciiValue!: "\u{2229}",  // ∩ INTERSECTION
+            Character("q").asciiValue!: "\u{222a}",  // ∪ UNION
+            Character("r").asciiValue!: "\u{2227}",  // ∧ LOGICAL AND
+            Character("s").asciiValue!: "\u{2228}",  // ∨ LOGICAL OR
+            Character("t").asciiValue!: "\u{00ac}",  // ¬ NOT SIGN
+            Character("u").asciiValue!: "\u{03b1}",  // α GREEK SMALL LETTER ALPHA
+            Character("v").asciiValue!: "\u{03b2}",  // β GREEK SMALL LETTER BETA
+            Character("w").asciiValue!: "\u{03c7}",  // χ GREEK SMALL LETTER CHI
+            Character("x").asciiValue!: "\u{03b4}",  // δ GREEK SMALL LETTER DELTA
+            Character("y").asciiValue!: "\u{03b5}",  // ε GREEK SMALL LETTER EPSILON
+            Character("z").asciiValue!: "\u{03c6}",  // φ GREEK SMALL LETTER PHI
+            Character("{").asciiValue!: "\u{03b3}",  // γ GREEK SMALL LETTER GAMMA
+            Character("|").asciiValue!: "\u{03b7}",  // η GREEK SMALL LETTER ETA
+            Character("}").asciiValue!: "\u{03b9}",  // ι GREEK SMALL LETTER IOTA
+            Character("~").asciiValue!: "\u{03c3}"   // σ GREEK SMALL LETTER SIGMA
+        ]
+
         return all
+    }
+    
+    /// Helper to create a UInt16 key from two bytes for multi-byte charset designators
+    static func multiByteKey(_ prefix: UInt8, _ code: UInt8) -> UInt16 {
+        return UInt16(prefix) << 8 | UInt16(code)
+    }
+    
+    static func initMultiByte () -> [UInt16:[UInt8:String]]
+    {
+        var mb: [UInt16:[UInt8:String]] = [:]
+        
+        /**
+         * Portuguese character set
+         * ESC (% 6
+         * Reference: xterm charsets.h / VT520 manual
+         */
+        mb [multiByteKey(Character("%").asciiValue!, Character("6").asciiValue!)] = [
+            Character("[").asciiValue!: "Ã",
+            Character("\\").asciiValue!: "Ç",
+            Character("]").asciiValue!: "Õ",
+            Character("{").asciiValue!: "ã",
+            Character("|").asciiValue!: "ç",
+            Character("}").asciiValue!: "õ"
+        ]
+        
+        /**
+         * Turkish character set
+         * ESC (% 2
+         * Reference: xterm charsets.h / VT520 manual
+         */
+        mb [multiByteKey(Character("%").asciiValue!, Character("2").asciiValue!)] = [
+            Character("&").asciiValue!: "\u{011f}",  // ğ LATIN SMALL LETTER G WITH BREVE
+            Character("@").asciiValue!: "\u{0130}",  // İ LATIN CAPITAL LETTER I WITH DOT ABOVE
+            Character("[").asciiValue!: "\u{015e}",  // Ş LATIN CAPITAL LETTER S WITH CEDILLA
+            Character("\\").asciiValue!: "\u{00d6}",  // Ö LATIN CAPITAL LETTER O WITH DIAERESIS
+            Character("]").asciiValue!: "\u{00c7}",  // Ç LATIN CAPITAL LETTER C WITH CEDILLA
+            Character("^").asciiValue!: "\u{00dc}",  // Ü LATIN CAPITAL LETTER U WITH DIAERESIS
+            Character("`").asciiValue!: "\u{011e}",  // Ğ LATIN CAPITAL LETTER G WITH BREVE
+            Character("{").asciiValue!: "\u{015f}",  // ş LATIN SMALL LETTER S WITH CEDILLA
+            Character("|").asciiValue!: "\u{00f6}",  // ö LATIN SMALL LETTER O WITH DIAERESIS
+            Character("}").asciiValue!: "\u{00e7}",  // ç LATIN SMALL LETTER C WITH CEDILLA
+            Character("~").asciiValue!: "\u{00fc}"   // ü LATIN SMALL LETTER U WITH DIAERESIS
+        ]
+        
+        return mb
     }
 }

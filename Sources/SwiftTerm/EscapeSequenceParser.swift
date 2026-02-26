@@ -411,11 +411,7 @@ public class EscapeSequenceParser {
         case 0x71: terminal.cmdSetCursorStyle(pars, collect)    // q
         case 0x72: terminal.cmdSetScrollRegion(pars, collect)   // r
         case 0x73:                                              // s
-            if terminal.marginMode {
-                terminal.cmdSetMargins(pars, collect)
-            } else {
-                terminal.cmdSaveCursor(pars, collect)
-            }
+            terminal.cmdSaveOrSetMargins(pars, collect)
         case 0x74: terminal.csit(pars, collect)                 // t
         case 0x75: terminal.cmdCsiU(pars, collect)              // u
         case 0x76: terminal.csiCopyRectangularArea(pars, collect) // v
@@ -486,6 +482,21 @@ public class EscapeSequenceParser {
                 // Charset designation
                 if CharSets.all.keys.contains(code) {
                     terminal.selectCharset([prefix, code])
+                } else {
+                    escHandlerFallback(collect, code)
+                }
+            default:
+                escHandlerFallback(collect, code)
+            }
+        } else if collect.count == 2 {
+            let charsetIntermediate = collect[0]
+            let secondPrefix = collect[1]
+            switch charsetIntermediate {
+            case 0x28, 0x29, 0x2a, 0x2b, 0x2d, 0x2e, 0x2f: // ( ) * + - . /
+                // Multi-byte charset designation (e.g., ESC ( % 6 for Portuguese)
+                let key = CharSets.multiByteKey(secondPrefix, code)
+                if CharSets.multiByte.keys.contains(key) {
+                    terminal.selectMultiByteCharset(charsetIntermediate, secondPrefix: secondPrefix, code: code)
                 } else {
                     escHandlerFallback(collect, code)
                 }
