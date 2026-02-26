@@ -252,10 +252,9 @@ public class GlyphAtlas {
 
         guard success else { return nil }
 
-        let bearingX = Float(boundingRect.origin.x)
-        let bearingY = Float(boundingRect.origin.y + boundingRect.size.height)
-
-        return (pixelData, rasterWidth, rasterHeight, bearingX, bearingY)
+        // Bearing is (0,0) because glyphs are rasterized into full cell-sized
+        // rectangles with correct baseline positioning already applied.
+        return (pixelData, rasterWidth, rasterHeight, 0, 0)
     }
 
     // MARK: - Atlas Packing
