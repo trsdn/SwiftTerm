@@ -369,7 +369,7 @@ open class Terminal {
     
     /// The current terminal rows (counting from 1)
     public private(set) var rows: Int = 25
-    var tabStopWidth : Int = 8
+    private var tabStopWidth : Int = 8
     
     /// Terminal configuration options.
     /// Setup(isReset:) method should be called to apply changes
@@ -401,14 +401,14 @@ open class Terminal {
     }
     
     // Whether the terminal is operating in application keypad mode
-    var applicationKeypad : Bool = false
+    private var applicationKeypad : Bool = false
     
     // Whether the terminal is operating in application cursor mode
     public var applicationCursor : Bool = false
 
     // XTMODKEYS resource values (xterm modifier key encoding)
     // Ps=0: modifyKeyboard, Ps=1: modifyCursorKeys, Ps=2: modifyFunctionKeys, Ps=4: modifyOtherKeys
-    var xtmodKeys: [Int: Int] = [0: 0, 1: 2, 2: 2, 4: 0]
+    private var xtmodKeys: [Int: Int] = [0: 0, 1: 2, 2: 2, 4: 0]
 
     /// The current modifyOtherKeys mode (0=disabled, 1=basic, 2=full)
     public var modifyOtherKeys: Int {
@@ -431,18 +431,18 @@ open class Terminal {
     
     // You can ignore most of the defaults set here, the function
     // reset() will do that again
-    var sendFocus: Bool = false
+    private var sendFocus: Bool = false
     var cursorHidden : Bool = false
     
     /// Controls the origin mode (DECOM), when set, the screen is limited to the top and bottom margins
-    var originMode: Bool = false
+    private var originMode: Bool = false
     
     /// Controls whether it is possible to set left and right margin modes
     var marginMode: Bool = false
     
-    var insertMode: Bool = false
+    private var insertMode: Bool = false
     
-    var wraparound: Bool = false
+    private var wraparound: Bool = false
 
     func setMarginMode(_ value: Bool) {
         marginMode = value
@@ -468,35 +468,35 @@ open class Terminal {
     
     private var charset: [UInt8:String]? = nil
     private var gCharsets: [[UInt8:String]?] = [CharSets.defaultCharset, nil, nil, nil]
-    var gcharset: Int = 0
-    var reverseWraparound: Bool = false
+    private var gcharset: Int = 0
+    private var reverseWraparound: Bool = false
     weak var tdel: TerminalDelegate?
     private var curAttr: Attribute = CharData.defaultAttr
     private var charToIndexMap: [Character:Int32] = [:]
     private var indexToCharMap: [Int32: Character] = [:]
     private var lastCharIndex: Int32 = Int32(CharData.maxRune + 1)
-    var gLevel: UInt8 = 0
-    var cursorBlink: Bool = false
+    private var gLevel: UInt8 = 0
+    private var cursorBlink: Bool = false
     
-    var allow80To132 = true
+    private var allow80To132 = true
     
     public var parser: EscapeSequenceParser
     var kittyGraphicsState = KittyGraphicsState()
     var kittyPlacementContext: KittyPlacementContext?
     
-    var refreshStart = Int.max
-    var refreshEnd = -1
-    var scrollInvariantRefreshStart = Int.max
-    var scrollInvariantRefreshEnd = -1
+    private var refreshStart = Int.max
+    private var refreshEnd = -1
+    private var scrollInvariantRefreshStart = Int.max
+    private var scrollInvariantRefreshEnd = -1
     var userScrolling = false
-    var lineFeedMode = false
+    private var lineFeedMode = false
     
     // We do not implement smooth scrolling here, dubious value, but
     // makes a test bass
-    var smoothScroll = false
+    private var smoothScroll = false
     
     // Installed colors are the 16 values that can be changed dynamically by the host
-    var installedColors: [Color]
+    private var installedColors: [Color]
     // The blueprint for the colors, computed based on the installed colors
     var defaultAnsiColors: [Color]
     // The active set of colors (based on the blueprint)
@@ -614,6 +614,12 @@ open class Terminal {
         }
     }
     
+    // These track the requested mouse and highlight colors (OSC 13, 14, 17, 19)
+    public var mouseForegroundColor: Color? = nil
+    public var mouseBackgroundColor: Color? = nil
+    public var highlightBackgroundColor: Color? = nil
+    public var highlightForegroundColor: Color? = nil
+
     // This tracks the requested cursor color or nil to use a view-default
     public var cursorColor: Color? = nil {
         didSet {
@@ -2099,7 +2105,8 @@ open class Terminal {
     //
     // - Parameter startAt: describes which of the colors is the first to try,
     // startAt = 0 is foreground, startAt = 1 is background, startAt = 2 is
-    // the cursor Color
+    // the cursor color, 3 = mouse foreground, 4 = mouse background,
+    // 7 = highlight background, 8 = tektronix cursor (ignored), 9 = highlight foreground
     func oscSetColors (_ data: ArraySlice<UInt8>, startAt: Int)
     {
         let groups = data.split(separator: UInt8 (ascii: ";"))
@@ -2120,6 +2127,14 @@ open class Terminal {
                     reportColor (oscCode: 11, color: queryBackground)
                 case 2:
                     reportColor (oscCode: 12, color: cursorColor ?? queryForeground)
+                case 3:
+                    reportColor (oscCode: 13, color: mouseForegroundColor ?? queryForeground)
+                case 4:
+                    reportColor (oscCode: 14, color: mouseBackgroundColor ?? queryBackground)
+                case 7:
+                    reportColor (oscCode: 17, color: highlightBackgroundColor ?? queryBackground)
+                case 9:
+                    reportColor (oscCode: 19, color: highlightForegroundColor ?? queryForeground)
                 default:
                     break
                 }
@@ -2140,7 +2155,14 @@ open class Terminal {
             case 2:
                 cursorColor = color
                 tdel?.setCursorColor(source: self, color: color)
-                break
+            case 3:
+                mouseForegroundColor = color
+            case 4:
+                mouseBackgroundColor = color
+            case 7:
+                highlightBackgroundColor = color
+            case 9:
+                highlightForegroundColor = color
             default:
                 break
             }

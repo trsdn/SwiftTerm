@@ -318,25 +318,25 @@ public class EscapeSequenceParser {
     /// ```
     public var oscHandlers: [Int:OscHandler]? = nil
 
-    var activeDcsHandler: DcsHandler? = nil
+    private var activeDcsHandler: DcsHandler? = nil
     var errorHandler: (ParsingState) -> ParsingState = { (state : ParsingState) -> ParsingState in return state; }
 
     // Reference to the terminal for direct dispatch
     unowned var terminal: Terminal?
 
-    var initialState: ParserState = .ground
-    var currentState: ParserState = .ground
+    private var initialState: ParserState = .ground
+    private var currentState: ParserState = .ground
     
     // buffers over several calls
-    var _osc: cstring
-    var _apc: cstring
-    var _pars: [Int]
+    private var _osc: cstring
+    private var _apc: cstring
+    private var _pars: [Int]
     var _parsTxt: [UInt8]
-    var _collect: cstring
+    private var _collect: cstring
     var printHandler: PrintHandler = { (slice : ArraySlice<UInt8>) -> () in }
     var printStateReset: () -> () = {  }
     
-    var table: TransitionTable
+    private var table: TransitionTable
     
     init (terminal: Terminal? = nil)
     {
@@ -524,9 +524,18 @@ public class EscapeSequenceParser {
         case 10:   terminal.oscSetColors(data, startAt: 0)
         case 11:   terminal.oscSetColors(data, startAt: 1)
         case 12:   terminal.oscSetColors(data, startAt: 2)
+        case 13:   terminal.oscSetColors(data, startAt: 3)
+        case 14:   terminal.oscSetColors(data, startAt: 4)
+        case 17:   terminal.oscSetColors(data, startAt: 7)
+        case 18:   terminal.oscSetColors(data, startAt: 8)
+        case 19:   terminal.oscSetColors(data, startAt: 9)
         case 52:   terminal.oscClipboard(data)
         case 104:  terminal.oscResetColor(data)
         case 112:  terminal.tdel?.setCursorColor(source: terminal, color: nil)
+        case 113:  terminal.mouseForegroundColor = nil
+        case 114:  terminal.mouseBackgroundColor = nil
+        case 117:  terminal.highlightBackgroundColor = nil
+        case 119:  terminal.highlightForegroundColor = nil
         case 133:  terminal.oscSemanticPrompt(data)
         case 777:  terminal.oscNotification(data)
         case 1337: terminal.osciTerm2(data)
@@ -563,7 +572,7 @@ public class EscapeSequenceParser {
     var escHandlerFallback: EscHandlerFallback = { (collect: cstring, flag: UInt8) in
     }
 
-    var dscHandlerFallback: DscHandlerFallback = { code, pars in }
+    private var dscHandlerFallback: DscHandlerFallback = { code, pars in }
     
     var executeHandlerFallback : ExecuteHandler = { () -> () in
     }
