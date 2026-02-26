@@ -241,9 +241,10 @@ public class GlyphAtlas {
 
             // Disable font smoothing — it creates wide halos in grayscale contexts
             // that look washed-out when used as alpha in the shader.
-            // At Retina resolution, standard rasterization is sharp enough.
-            cgContext.setAllowsAntialiasing(false)
-            cgContext.setShouldAntialias(false)
+            // Keep anti-aliasing on so the atlas captures the full glyph shape;
+            // the shader applies a binary threshold for sharp edges.
+            cgContext.setAllowsAntialiasing(true)
+            cgContext.setShouldAntialias(true)
             cgContext.setShouldSmoothFonts(false)
 
             // Clear to black (transparent in our shader)

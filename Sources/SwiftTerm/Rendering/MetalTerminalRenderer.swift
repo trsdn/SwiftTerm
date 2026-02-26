@@ -807,7 +807,7 @@ public class MetalTerminalRenderer: TerminalRenderer {
         };
 
         float2 pos = positions[vertexID];
-        float2 cellOrigin = float2(col, row) * uniforms.cellSize;
+        float2 cellOrigin = floor(float2(col, row) * uniforms.cellSize);
         cellOrigin.y -= uniforms.scrollY;
         float2 pixelPos = cellOrigin + pos * uniforms.cellSize;
 
@@ -859,7 +859,8 @@ public class MetalTerminalRenderer: TerminalRenderer {
         };
 
         float2 pos = positions[vertexID];
-        float2 cellOrigin = float2(col, row) * uniforms.cellSize;
+        // Snap cell origin to integer pixel boundary
+        float2 cellOrigin = floor(float2(col, row) * uniforms.cellSize);
         cellOrigin.y -= uniforms.scrollY;
         // Atlas is rasterized at backing resolution; glyph sizes are in backing pixels
         float2 glyphOrigin = cellOrigin;
@@ -892,6 +893,8 @@ public class MetalTerminalRenderer: TerminalRenderer {
         constexpr sampler s(filter::nearest);
         float alpha = atlas.sample(s, in.texCoord).r;
 
+        // Binary threshold: AA gives full glyph shape, step makes edges crisp
+        alpha = step(0.35, alpha);
         if (alpha < 0.01) discard_fragment();
 
         return float4(in.fgColor.rgb, in.fgColor.a * alpha);
@@ -914,7 +917,7 @@ public class MetalTerminalRenderer: TerminalRenderer {
         };
 
         float2 pos = positions[vertexID];
-        float2 cellOrigin = float2(col, row) * uniforms.cellSize;
+        float2 cellOrigin = floor(float2(col, row) * uniforms.cellSize);
         cellOrigin.y -= uniforms.scrollY;
         float2 pixelPos = cellOrigin + pos * uniforms.cellSize;
 
