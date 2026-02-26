@@ -2068,7 +2068,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         }
         let line = buffer.lines[position.row]
         let maxCol = max(0, min(terminal.cols - 1, line.count - 1))
-        var col = max(0, min(position.col, maxCol))
+        let col = max(0, min(position.col, maxCol))
         let cell = line[col]
         if let payload = cell.getPayload() as? String {
             return payload

@@ -2090,6 +2090,7 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     public override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         var didHandleEvent = false
         let kittyFlags = terminal.keyboardEnhancementFlags
+        let wasCommandActive = commandActive
 
         if _markedTextRange != nil {
             pendingKittyKeyEvent = nil
@@ -2102,6 +2103,12 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         
         for press in presses {
             guard let key = press.key else { continue }
+            if key.keyCode == .keyboardLeftGUI || key.keyCode == .keyboardRightGUI {
+                activeCommandKeys.insert(key.keyCode)
+            }
+            if key.modifierFlags.contains(.command) || !activeCommandKeys.isEmpty {
+                commandActive = true
+            }
             uitiLog("pressesBegan keyCode:\(key.keyCode) chars:\(key.characters.debugDescription) ignoring:\(key.charactersIgnoringModifiers.debugDescription) modifiers:\(key.modifierFlags)")
             if !kittyFlags.isEmpty {
                 if key.modifierFlags.contains([.alternate, .command]) && key.charactersIgnoringModifiers == "o" {
@@ -2190,6 +2197,9 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
                 break // ignored
             case .keyboardLeftControl:
                 break // ignored
+            case .keyboardLeftGUI:
+                commandActive = true
+                break // ignored
             case .keyboardLeftShift:
                 break // ignored
             case .keyboardLockingCapsLock:
@@ -2201,6 +2211,9 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
             case .keyboardRightAlt:
                 break // ignored
             case .keyboardRightControl:
+                break // ignored
+            case .keyboardRightGUI:
+                commandActive = true
                 break // ignored
             case .keyboardRightShift:
                 break // ignored
@@ -2313,6 +2326,18 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
                 }
                 RunLoop.current.add(keyRepeat!, forMode: .default)
                 sendData (data: sendableData)
+            }
+        }
+        if commandActive != wasCommandActive {
+            if let point = lastPointerLocation {
+                reportLinkIfNeeded(at: point, modifiers: [.command], force: true)
+                updateLinkHighlightIfNeeded(at: point, modifiers: [.command], force: true)
+            }
+            if linkHighlightMode == .alwaysWithModifier {
+                terminal.updateFullScreen()
+            }
+            if linkHighlightMode == .alwaysWithModifier || linkHighlightMode == .hoverWithModifier {
+                queuePendingDisplay()
             }
         }
         if didHandleEvent == false {
