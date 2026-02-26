@@ -95,8 +95,6 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     var debug: TerminalDebugView?
     var pendingDisplay: Bool = false
     var lastKeyboardInputTime: UInt64 = 0
-    // Coalesces rapid resize events to avoid redundant buffer reflow (issue #361).
-    private var pendingResizeWorkItem: DispatchWorkItem?
     
     var cellDimension: CellDimension!
     var caretView: CaretView!
@@ -215,6 +213,8 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         blinkTimer = Timer.scheduledTimer(withTimeInterval: 0.53, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.blinkOn.toggle()
+            let hadBlink = self.attributes.keys.contains { $0.style.contains(.blink) }
+            guard hadBlink else { return }
             // Invalidate cached attributes for blink cells
             self.attributes = self.attributes.filter { !$0.key.style.contains(.blink) }
             self.urlAttributes = self.urlAttributes.filter { !$0.key.style.contains(.blink) }
@@ -601,20 +601,9 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         updateCursorPosition()
         updateProgressBarFrame()
 
-        // Coalesce rapid resize events: cancel any pending terminal resize
-        // and schedule a new one at the end of the current run loop pass.
-        // This avoids redundant buffer reflow when AppKit fires many
-        // setFrameSize calls in quick succession during live window resize.
-        pendingResizeWorkItem?.cancel()
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let self = self else { return }
-            self.pendingResizeWorkItem = nil
-            if !self.processSizeChange(newSize: self.frame.size) {
-                self.needsDisplay = true
-            }
+        if !processSizeChange(newSize: frame.size) {
+            needsDisplay = true
         }
-        pendingResizeWorkItem = workItem
-        DispatchQueue.main.async(execute: workItem)
     }
 
     public override func resizeSubviews(withOldSize oldSize: NSSize) {
