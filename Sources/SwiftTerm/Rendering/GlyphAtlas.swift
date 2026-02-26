@@ -99,20 +99,26 @@ public class GlyphAtlas {
     /// Font set used for rasterization.
     public var fonts: GlyphAtlasFontSet
 
+    /// Backing scale factor for HiDPI rasterization.
+    public let rasterScale: CGFloat
+
     // MARK: - Initializer
 
     /// Creates a new glyph atlas backed by an `.r8Unorm` Metal texture.
     ///
     /// - Parameters:
     ///   - device: The Metal device to create the texture on.
-    ///   - cellWidth: Width of a single terminal cell in pixels.
-    ///   - cellHeight: Height of a single terminal cell in pixels.
+    ///   - cellWidth: Width of a single terminal cell in backing pixels.
+    ///   - cellHeight: Height of a single terminal cell in backing pixels.
     ///   - fonts: The font set containing normal, bold, italic, and boldItalic variants.
-    public init(device: MTLDevice, cellWidth: Int, cellHeight: Int, fonts: GlyphAtlasFontSet) {
+    ///   - scale: Backing scale factor (e.g. 2.0 on Retina). The CGContext is scaled
+    ///     so fonts render with full HiDPI detail.
+    public init(device: MTLDevice, cellWidth: Int, cellHeight: Int, fonts: GlyphAtlasFontSet, scale: CGFloat = 1) {
         self.device = device
         self.cellWidth = cellWidth
         self.cellHeight = cellHeight
         self.fonts = fonts
+        self.rasterScale = scale
 
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .r8Unorm,
@@ -229,9 +235,13 @@ public class GlyphAtlas {
                 return false
             }
 
+            // Scale context for HiDPI rasterization; font metrics are in logical points
+            let scale = rasterScale
+            cgContext.scaleBy(x: scale, y: scale)
+
             // Clear to black (transparent in our shader)
             cgContext.setFillColor(CGColor(gray: 0, alpha: 1))
-            cgContext.fill(CGRect(x: 0, y: 0, width: rasterWidth, height: rasterHeight))
+            cgContext.fill(CGRect(x: 0, y: 0, width: CGFloat(rasterWidth) / scale, height: CGFloat(rasterHeight) / scale))
 
             // Draw glyph in white
             cgContext.setFillColor(CGColor(gray: 1, alpha: 1))
@@ -242,7 +252,9 @@ public class GlyphAtlas {
             let lineHeight = ascent + descent + leading
 
             // Position baseline so the glyph is vertically centered in the cell
-            let baselineY = descent + (CGFloat(rasterHeight) - lineHeight) / 2.0
+            // (coordinates are in logical points since the context is scaled)
+            let logicalHeight = CGFloat(rasterHeight) / scale
+            let baselineY = descent + (logicalHeight - lineHeight) / 2.0
 
             var position = CGPoint(x: 0, y: baselineY)
             CTFontDrawGlyphs(font, &glyphs, &position, 1, cgContext)

@@ -119,6 +119,9 @@ class ViewController: NSViewController, LocalProcessTerminalViewDelegate, NSUser
     override func viewDidLoad() {
         super.viewDidLoad()
         terminal = LocalProcessTerminalView(frame: view.frame)
+        if MetalTerminalRenderer.isAvailable {
+            terminal.renderer = MetalTerminalRenderer()
+        }
         terminal.caretColor = .systemGreen
         terminal.getTerminal().setCursorStyle(.steadyBlock)
         zoomGesture = NSMagnificationGestureRecognizer(target: self, action: #selector(zoomGestureHandler))

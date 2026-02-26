@@ -249,6 +249,15 @@ public class MetalTerminalRenderer: TerminalRenderer {
             CATransaction.commit()
         }
 
+        // Rebuild glyph atlas if backing scale changed (e.g. window moved between displays)
+        if backingScale != atlasScale {
+            glyphIndexMap.removeAll()
+            glyphEntries.removeAll()
+            glyphEntries.append(GlyphEntryData())
+            glyphBufferDirty = true
+            setupGlyphAtlas(scale: backingScale)
+        }
+
         // Populate cell buffer from terminal state
         let displayBuffer = terminal.buffer
         let termCols = terminal.cols
@@ -326,7 +335,13 @@ public class MetalTerminalRenderer: TerminalRenderer {
         self.metalLayer = metal
     }
 
+    private var atlasScale: CGFloat = 1
+
     private func setupGlyphAtlas() {
+        setupGlyphAtlas(scale: terminalView?.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0)
+    }
+
+    private func setupGlyphAtlas(scale: CGFloat) {
         guard let view = terminalView else { return }
 
         let fontSet = view.fontSet
@@ -337,14 +352,17 @@ public class MetalTerminalRenderer: TerminalRenderer {
             boldItalic: fontSet.boldItalic
         )
 
-        let cellW = Int(ceil(cellDims.width))
-        let cellH = Int(ceil(cellDims.height))
+        // Rasterize at backing resolution for 1:1 texel-to-pixel mapping on Retina
+        atlasScale = scale
+        let cellW = Int(ceil(cellDims.width * scale))
+        let cellH = Int(ceil(cellDims.height * scale))
 
         glyphAtlas = GlyphAtlas(
             device: device,
             cellWidth: cellW,
             cellHeight: cellH,
-            fonts: atlasFonts
+            fonts: atlasFonts,
+            scale: scale
         )
     }
 
@@ -838,10 +856,9 @@ public class MetalTerminalRenderer: TerminalRenderer {
         float2 pos = positions[vertexID];
         float2 cellOrigin = float2(col, row) * uniforms.cellSize;
         cellOrigin.y -= uniforms.scrollY;
-        // Glyph bearing and size are in logical pixels; scale to backing pixels
-        float s = uniforms.backingScale;
-        float2 glyphOrigin = cellOrigin + float2(glyph.bearing.x, glyph.bearing.y) * s;
-        float2 pixelPos = glyphOrigin + pos * glyph.size * s;
+        // Atlas is rasterized at backing resolution; glyph sizes are in backing pixels
+        float2 glyphOrigin = cellOrigin;
+        float2 pixelPos = glyphOrigin + pos * glyph.size;
 
         float2 clipPos = (pixelPos / uniforms.viewportSize) * 2.0 - 1.0;
         clipPos.y = -clipPos.y;
@@ -867,7 +884,7 @@ public class MetalTerminalRenderer: TerminalRenderer {
             discard_fragment();
         }
 
-        constexpr sampler s(filter::linear);
+        constexpr sampler s(filter::nearest);
         float alpha = atlas.sample(s, in.texCoord).r;
 
         if (alpha < 0.01) discard_fragment();
