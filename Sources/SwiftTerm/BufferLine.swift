@@ -172,7 +172,11 @@ public final class BufferLine: CustomDebugStringConvertible {
     }
 
     /// Resizes the buffer line, if the new size is larger, the empty region is filled with
-    /// `fillData` values, if it is smaller, the data is trimmed
+    /// `fillData` values, if it is smaller, the data is trimmed.
+    ///
+    /// Uses capacity-aware allocation: shrinking keeps the existing buffer to avoid
+    /// reallocation when the terminal is resized back, and growing within existing
+    /// capacity avoids allocation entirely.
     public func resize (cols: Int, fillData: CharData)
     {
         let len = dataSize
@@ -180,7 +184,9 @@ public final class BufferLine: CustomDebugStringConvertible {
             return
         }
 
-        if cols > len {
+        let capacity = data.count
+        if cols > capacity {
+            // Must grow beyond current capacity
             let newBuf = UnsafeMutableBufferPointer<CharData>.allocate(capacity: cols)
             // Copy existing data
             if len > 0 {
@@ -193,25 +199,25 @@ public final class BufferLine: CustomDebugStringConvertible {
             data.deallocate()
             data = newBuf
             dataSize = cols
-        } else {
-            if cols > 0 {
-                // Sanitize wide character at the truncation boundary to prevent
-                // a half-wide character from remaining (issue #361).
-                if data[cols - 1].width == 2 {
-                    data[cols - 1] = fillData
-                }
-                let newBuf = UnsafeMutableBufferPointer<CharData>.allocate(capacity: cols)
-                _ = newBuf.initialize(fromContentsOf: data[0..<cols])
-                data.deinitialize()
-                data.deallocate()
-                data = newBuf
-                dataSize = cols
-            } else {
-                data.deinitialize()
-                data.deallocate()
-                data = UnsafeMutableBufferPointer<CharData>.allocate(capacity: 0)
-                dataSize = 0
+        } else if cols > len {
+            // Growing within existing capacity — no allocation needed
+            for i in len..<cols {
+                data[i] = fillData
             }
+            dataSize = cols
+        } else if cols > 0 {
+            // Shrinking — keep existing buffer, just adjust logical size
+            // Sanitize wide character at the truncation boundary to prevent
+            // a half-wide character from remaining (issue #361).
+            if data[cols - 1].width == 2 {
+                data[cols - 1] = fillData
+            }
+            dataSize = cols
+        } else {
+            data.deinitialize()
+            data.deallocate()
+            data = UnsafeMutableBufferPointer<CharData>.allocate(capacity: 0)
+            dataSize = 0
         }
     }
 
@@ -250,6 +256,8 @@ public final class BufferLine: CustomDebugStringConvertible {
         }
         dataSize = srcSize
         isWrapped = line.isWrapped
+        renderMode = line.renderMode
+        images = line.images
     }
 
     /// Returns the trimmed length in terms of cells used from the BufferLine

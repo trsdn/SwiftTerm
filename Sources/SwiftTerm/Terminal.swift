@@ -5441,12 +5441,15 @@ open class Terminal {
             }
 
             let scrollRegionHeight = bottomRow - topRow + 1 /*as it's zero-based*/
+            // Save the line being scrolled out so we can reuse its allocation
+            let scrolledOut = lines [topRow]
             if scrollRegionHeight > 1 {
                 if !lines.shiftElements (start: topRow + 1, count: scrollRegionHeight - 1, offset: -1) {
                     print ("Assertion on scroll, state was: bottomRow=\(bottomRow) topRow=\(topRow) yDisp=\(buffer.yDisp) linesTop=\(buffer.linesTop) isAlternate=\(isCurrentBufferAlternate)")
                 }
             }
-            lines [bottomRow] = BufferLine (from: newLine)
+            scrolledOut.copyFrom (line: newLine)
+            lines [bottomRow] = scrolledOut
         }
 
         // Move the viewport to the bottom of the buffer unless the user is
