@@ -211,6 +211,7 @@ public class EscapeSequenceParser {
         table.add (codes: executables, state: .sosPmApcString, action: .ignore, next: .sosPmApcString)
         table.add (code: 0x9c, state: .sosPmApcString, action: .ignore, next: .ground)
         table.add (code: 0x7f, state: .sosPmApcString, action: .ignore, next: .sosPmApcString)
+        table.add (code: NonAsciiPrintable, state: .sosPmApcString, action: .ignore, next: .sosPmApcString)
         // csi entries
         table.add (code: 0x5b, state: .escape, action: .clear, next: .csiEntry)
         table.add (codes: r (low: 0x40, high: 0x7f), state: .csiEntry, action: .csiDispatch, next: .ground)
@@ -273,6 +274,7 @@ public class EscapeSequenceParser {
         table.add (codes: printables, state: .dcsPassthrough, action: .dcsPut, next: .dcsPassthrough)
         table.add (code: 0x7f, state: .dcsPassthrough, action: .ignore, next: .dcsPassthrough)
         table.add (codes: [0x1b, 0x9c], state: .dcsPassthrough, action: .dcsUnhook, next: .ground)
+        table.add (code: NonAsciiPrintable, state: .dcsPassthrough, action: .dcsPut, next: .dcsPassthrough)
         table.add (code: NonAsciiPrintable, state: .oscString, action: .oscPut, next: .oscString)
         table.add (code: NonAsciiPrintable, state: .apcString, action: .oscPut, next: .apcString)
         return table
@@ -627,13 +629,10 @@ public class EscapeSequenceParser {
         while i < end {
             code = data [i]
             
-            // 1f..80 are printable ascii characters
-            // c2..f3 are valid utf8 beginning of sequence elements, and most importantly,
-            // does not cover 0x90 which is the DCS initiator in 8 bit mode.
-            
-            // The nice code is commented out, because this ends up consuming valid utf8 code when
-            // we are in the middle of things (force a small reading buffer to see more easily)
-            if currentState == .ground && code > 0x1f  { // }(code > 0x1f && code < 0x80 || (code > 0xc2 && code < 0xf3)) {
+            // Fast path: batch all non-control bytes as printable text in ground state.
+            // In UTF-8 mode, bytes 0x80-0x9f are valid continuation/leading bytes and must
+            // not be interpreted as C1 control characters (see issue #43).
+            if currentState == .ground && code > 0x1f {
                 print = (~print != 0) ? print : i
                 repeat {
                     i += 1
@@ -653,7 +652,10 @@ public class EscapeSequenceParser {
             }
             
             // Normal transition and action loop
-            transition = tableData [(Int(currentState.rawValue) << 8) | Int (UInt8 ((code < 0xa0 ? code : EscapeSequenceParser.NonAsciiPrintable)))]
+            // Map bytes >= 0x80 to NonAsciiPrintable to avoid interpreting UTF-8
+            // continuation bytes (0x80-0x9f) as C1 control characters (issue #43).
+            // 7-bit escape forms (ESC P, ESC [, ESC ], etc.) remain fully supported.
+            transition = tableData [(Int(currentState.rawValue) << 8) | Int (UInt8 ((code < 0x80 ? code : EscapeSequenceParser.NonAsciiPrintable)))]
             let action = ParserAction (rawValue: transition >> 4)!
             switch action {
             case .print:
