@@ -41,7 +41,8 @@ public class Color: Hashable {
         hasher.combine(blue)
     }
     
-    static let paleColors: [Color] = [
+    /// Pale/solarized-style ANSI color palette (16 colors)
+    public static let paleColors: [Color] = [
         // dark colors
         Color (red8: 0x2e, green8: 0x34, blue8: 0x36),
         Color (red8: 0xcc, green8: 0x00, blue8: 0x00),
@@ -63,7 +64,8 @@ public class Color: Hashable {
         Color (red8: 0xee, green8: 0xee, blue8: 0xec)
     ]
     
-    static let vgaColors: [Color] = [
+    /// Classic VGA ANSI color palette (16 colors)
+    public static let vgaColors: [Color] = [
         // dark colors
         Color (red8: 0, green8: 0, blue8: 0),
         Color (red8: 170, green8: 0, blue8: 0),
@@ -83,7 +85,8 @@ public class Color: Hashable {
         Color (red8: 255, green8: 255, blue8: 255),
     ]
     
-    static let terminalAppColors: [Color] = [
+    /// macOS Terminal.app ANSI color palette (16 colors)
+    public static let terminalAppColors: [Color] = [
         Color (red8: 0, green8: 0, blue8: 0),
         Color (red8: 194, green8: 54, blue8: 33),
         Color (red8: 37, green8: 188, blue8: 36),
@@ -102,7 +105,8 @@ public class Color: Hashable {
         Color (red8: 233, green8: 235, blue8: 235),
     ]
     
-    static let xtermColors: [Color] = [
+    /// XTerm standard ANSI color palette (16 colors)
+    public static let xtermColors: [Color] = [
         Color (red8: 0, green8: 0, blue8: 0),
         Color (red8: 205, green8: 0, blue8: 0),
         Color (red8: 0, green8: 205, blue8: 0),
@@ -121,7 +125,8 @@ public class Color: Hashable {
         Color (red8: 255, green8: 255, blue8: 255),
     ]
     
-    static let defaultInstalledColors: [Color] = [
+    /// Default ANSI color palette used by SwiftTerm (16 colors)
+    public static let defaultInstalledColors: [Color] = [
         Color (red8: 0, green8: 0, blue8: 0),
         Color (red8: 153, green8: 0, blue8: 1),
         Color (red8: 0, green8: 166, blue8: 3),

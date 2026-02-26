@@ -1114,7 +1114,9 @@ open class Terminal {
     ///  - handler: the code to invoke when the OSC handler is received.
     public func registerOscHandler (code: Int, handler: @escaping (ArraySlice<UInt8>) -> ())
     {
-        parser.oscHandlers [code] = handler
+        var v = parser.oscHandlers ?? [:]
+        v [code] = handler
+        parser.oscHandlers = v
     }
     
     func cmdSet8BitControls ()
@@ -1770,8 +1772,8 @@ open class Terminal {
                         for y in hlt.start.row...(buffer.y+buffer.yBase) {
                             let line = buffer.lines [y]
                             let startCol = y == hlt.start.row ? min (hlt.start.col, cols-1) : 0
-                            let endCol = y == buffer.y ? min (buffer.x, cols-1) : (marginMode ? buffer.marginRight : cols-1)
-                            if endCol > startCol {
+                            let endCol = y == buffer.y ? min (buffer.x - 1, cols-1) : (marginMode ? buffer.marginRight : cols-1)
+                            if endCol >= startCol {
                                 for x in startCol...endCol {
                                     var cd = line [x]
                                     cd.setPayload(atom: urlToken)
@@ -5818,11 +5820,12 @@ open class Terminal {
      * - Parameters:
      *  - termName: desired name for the terminal, if set to nil (the default), it sets it to xterm-256color
      *  - trueColor: if set to true, sets the COLORTERM variable to truecolor,
+     *  - sessionId: if provided, sets TERM_SESSION_ID to this value; if nil, a new UUID is generated
      * - Returns: an array of default environment variables that include TERM set to the specified value, or xterm-256color,
-     * and if trueColor is true, COLORTERM=truecolor, the LANG=en_US.UTF-8 and it mirrors the currently set values
-     * for LOGNAME, USER, DISPLAY, LC_TYPE, USER and HOME.
+     * and if trueColor is true, COLORTERM=truecolor, the LANG=en_US.UTF-8, a unique TERM_SESSION_ID,
+     * and it mirrors the currently set values for LOGNAME, USER, DISPLAY, LC_TYPE, USER and HOME.
      */
-    public static func getEnvironmentVariables (termName: String? = nil, trueColor: Bool = true) -> [String]
+    public static func getEnvironmentVariables (termName: String? = nil, trueColor: Bool = true, sessionId: String? = nil) -> [String]
     {
         var l : [String] = []
         let t = termName == nil ? "xterm-256color" : termName!
@@ -5830,6 +5833,8 @@ open class Terminal {
         if trueColor {
             l.append ("COLORTERM=truecolor")
         }
+        
+        l.append ("TERM_SESSION_ID=\(sessionId ?? UUID().uuidString)")
         
         // Without this, tools like "vi" produce sequences that are not UTF-8 friendly
         l.append ("LANG=en_US.UTF-8")
@@ -5850,6 +5855,29 @@ open class Terminal {
         case normal
         /// The alternate buffer, regardless of which buffer is active
         case alt
+    }
+
+    /// Location type for link lookup requests.
+    public enum LinkLookupLocation {
+        /// Buffer coordinates (absolute row/col in the active display buffer).
+        case buffer(Position)
+        /// Screen coordinates (row/col relative to the visible viewport).
+        case screen(Position)
+    }
+
+    /// Link lookup behavior for explicit hyperlinks and implicit detection.
+    public enum LinkLookupMode {
+        /// Only look for explicit hyperlink payloads.
+        case explicitOnly
+        /// Look for explicit hyperlinks first, then fall back to implicit detection.
+        case explicitAndImplicit
+    }
+
+    struct LinkMatch {
+        let text: String
+        let row: Int
+        let range: Range<Int>
+        let isExplicit: Bool
     }
     
     func bufferFromKind (kind: BufferKind) -> Buffer
@@ -5891,9 +5919,243 @@ open class Terminal {
         getText(start: start, end: end, buffer: buffer)
     }
 
+    /// Returns a hyperlink or implicit link at the provided location.
+    public func link(at location: LinkLookupLocation, mode: LinkLookupMode) -> String?
+    {
+        return linkMatch(at: location, mode: mode)?.text
+    }
+
     func getDisplayText (start: Position, end: Position) -> String
     {
         getText(start: start, end: end, buffer: displayBuffer)
+    }
+
+    func linkMatch(at location: LinkLookupLocation, mode: LinkLookupMode) -> LinkMatch?
+    {
+        let buffer = displayBuffer
+        guard let position = resolveLinkLocation(location, in: buffer) else {
+            return nil
+        }
+
+        if let explicit = explicitLinkMatch(at: position, in: buffer) {
+            return explicit
+        }
+
+        switch mode {
+        case .explicitOnly:
+            return nil
+        case .explicitAndImplicit:
+            return implicitLinkMatch(at: position, in: buffer)
+        }
+    }
+
+    private func resolveLinkLocation(_ location: LinkLookupLocation, in buffer: Buffer) -> Position?
+    {
+        let pos: Position
+        switch location {
+        case .buffer(let position):
+            pos = position
+        case .screen(let position):
+            pos = Position(col: position.col, row: position.row + buffer.yDisp)
+        }
+
+        if buffer.lines.isEmpty {
+            return nil
+        }
+        let row = max(0, min(pos.row, buffer.lines.count - 1))
+        let col = max(0, min(pos.col, cols - 1))
+        return Position(col: col, row: row)
+    }
+
+    private func explicitLink(at position: Position, in buffer: Buffer) -> String?
+    {
+        let line = buffer.lines[position.row]
+        guard let payload = line[position.col].getPayload() as? String else {
+            return nil
+        }
+        return parseHyperlinkPayload(payload)
+    }
+
+    private func parseHyperlinkPayload(_ payload: String) -> String?
+    {
+        let split = payload.split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)
+        guard split.count > 1 else {
+            return nil
+        }
+        return String(split[1])
+    }
+
+    private func explicitLinkMatch(at position: Position, in buffer: Buffer) -> LinkMatch?
+    {
+        guard let payloadToken = payloadCode(at: position, in: buffer) else {
+            return nil
+        }
+        let line = buffer.lines[position.row]
+        let lineLimit = min(cols, line.count)
+        guard lineLimit > 0 else {
+            return nil
+        }
+        var start = position.col
+        while start > 0 && payloadCode(at: Position(col: start - 1, row: position.row), in: buffer) == payloadToken {
+            start -= 1
+        }
+        var end = position.col
+        while end < lineLimit && payloadCode(at: Position(col: end, row: position.row), in: buffer) == payloadToken {
+            end += 1
+        }
+        guard start < end else {
+            return nil
+        }
+        let rawPayload = line[position.col].getPayload() as? String
+            ?? line[max(0, position.col - 1)].getPayload() as? String
+        guard let payload = rawPayload, let url = parseHyperlinkPayload(payload) else {
+            return nil
+        }
+        return LinkMatch(text: url, row: position.row, range: start..<end, isExplicit: true)
+    }
+
+    private func implicitLinkMatch(at position: Position, in buffer: Buffer) -> LinkMatch?
+    {
+        guard position.row >= 0 && position.row < buffer.lines.count else {
+            return nil
+        }
+        let line = buffer.lines[position.row]
+        let lineLimit = min(cols, line.count)
+        guard lineLimit > 0 else {
+            return nil
+        }
+        var col = max(0, min(position.col, lineLimit - 1))
+        if col > 0 && line[col].code == 0 && line[col - 1].width == 2 {
+            col -= 1
+        }
+        if cellIsWhitespace(line, index: col) {
+            return nil
+        }
+
+        var start = col
+        while start > 0 && !cellIsWhitespace(line, index: start - 1) {
+            start -= 1
+        }
+
+        var end = col
+        while end < lineLimit && !cellIsWhitespace(line, index: end) {
+            end += 1
+        }
+
+        if end <= start {
+            return nil
+        }
+
+        var word = line.translateToString(
+            trimRight: false,
+            startCol: start,
+            endCol: end,
+            skipNullCellsFollowingWide: true,
+            characterProvider: { self.getCharacter(for: $0) }
+        )
+        word = word.replacingOccurrences(of: "\u{0}", with: "")
+        guard !word.isEmpty else {
+            return nil
+        }
+
+        if let url = detectUrl(in: word) {
+            return LinkMatch(text: url, row: position.row, range: start..<end, isExplicit: false)
+        }
+        if isFilePath(word) {
+            return LinkMatch(text: word, row: position.row, range: start..<end, isExplicit: false)
+        }
+        return nil
+    }
+
+    private func payloadCode(at position: Position, in buffer: Buffer) -> UInt16?
+    {
+        guard position.row >= 0 && position.row < buffer.lines.count else {
+            return nil
+        }
+        let line = buffer.lines[position.row]
+        let lineLimit = min(cols, line.count)
+        guard lineLimit > 0 else {
+            return nil
+        }
+        let col = max(0, min(position.col, lineLimit - 1))
+        let cell = line[col]
+        if cell.hasPayload {
+            return cell.payload.code
+        }
+        if cell.code == 0 && col > 0 && line[col - 1].width == 2 {
+            let base = line[col - 1]
+            if base.hasPayload {
+                return base.payload.code
+            }
+        }
+        return nil
+    }
+
+    private func cellIsWhitespace(_ line: BufferLine, index: Int) -> Bool
+    {
+        if index < 0 || index >= line.count {
+            return true
+        }
+        let cell = line[index]
+        if cell.code != 0 {
+            return getCharacter(for: cell).isWhitespace
+        }
+        if index > 0 && line[index - 1].width == 2 {
+            let base = line[index - 1]
+            if base.code == 0 {
+                return true
+            }
+            return getCharacter(for: base).isWhitespace
+        }
+        return true
+    }
+
+    private func detectUrl(in word: String) -> String?
+    {
+        let trimmed = word.trimmingCharacters(in: CharacterSet(charactersIn: ".,;:!?)]}\"'"))
+        let cleaned = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "([{\"'"))
+        if cleaned.contains("://") {
+            return cleaned
+        }
+        if cleaned.hasPrefix("www.") {
+            return cleaned
+        }
+        guard cleaned.contains(".") else {
+            return nil
+        }
+        let parts = cleaned.split(separator: ".")
+        guard parts.count >= 2, let tld = parts.last, tld.count >= 2, tld.count <= 24 else {
+            return nil
+        }
+        let hasLetter = cleaned.unicodeScalars.contains { CharacterSet.letters.contains($0) }
+        guard hasLetter else {
+            return nil
+        }
+        let tldScalars = tld.unicodeScalars
+        guard !tldScalars.isEmpty && tldScalars.allSatisfy({ CharacterSet.letters.contains($0) }) else {
+            return nil
+        }
+        return cleaned
+    }
+
+    private func isFilePath(_ word: String) -> Bool
+    {
+        if word.contains("://") {
+            return false
+        }
+        if word.hasPrefix("/") || word.hasPrefix("~/") || word.hasPrefix("./") || word.hasPrefix("../") {
+            return true
+        }
+        if word.hasPrefix("\\\\") {
+            return true
+        }
+        if word.count >= 3 {
+            let chars = Array(word)
+            if chars[1] == ":" && (chars[2] == "\\" || chars[2] == "/") {
+                return true
+            }
+        }
+        return word.contains("/")
     }
 
     func getText (start: Position, end: Position, buffer: Buffer) -> String
