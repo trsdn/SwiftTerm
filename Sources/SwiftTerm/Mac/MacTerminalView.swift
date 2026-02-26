@@ -1713,6 +1713,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     }
     
     private var autoScrollDelta = 0
+    private var autoScrollTimer: Timer?
     // Callback from when the mouseDown autoscrolling timer goes off
     private func scrollingTimerElapsed (source: Timer)
     {
@@ -1722,7 +1723,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         if autoScrollDelta < 0 {
             scrollUp(lines: autoScrollDelta * -1)
         } else {
-            scrollUp(lines: autoScrollDelta)
+            scrollDown(lines: autoScrollDelta)
         }
     }
     
@@ -1730,6 +1731,11 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         if allowMouseReporting && terminal.mouseMode.sendButtonPress() {
             sharedMouseEvent(with: event)
             return
+        }
+        
+        autoScrollDelta = 0
+        autoScrollTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] timer in
+            self?.scrollingTimerElapsed(source: timer)
         }
         
         let hit = calculateMouseHit(with: event).grid
@@ -1766,6 +1772,8 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     var didSelectionDrag: Bool = false
     
     public override func mouseUp(with event: NSEvent) {
+        autoScrollTimer?.invalidate()
+        autoScrollTimer = nil
         if event.modifierFlags.contains(.command){
             if let payload = getPayload(for: event) as? String {
                 if let (url, params) = urlAndParamsFrom(payload: payload) {
