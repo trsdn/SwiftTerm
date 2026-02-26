@@ -322,6 +322,29 @@ public class MetalTerminalRenderer: TerminalRenderer {
         guard let buffer = cellBuffer else { return }
         let cells = buffer.contents().bindMemory(to: CellData.self, capacity: cellCount)
 
+        // Selection: pre-compute selection background color
+        var selR: UInt8 = 153, selG: UInt8 = 204, selB: UInt8 = 255
+        if let selColor = terminalView?.selectedTextBackgroundColor.usingColorSpace(.sRGB) {
+            selR = UInt8(selColor.redComponent * 255)
+            selG = UInt8(selColor.greenComponent * 255)
+            selB = UInt8(selColor.blueComponent * 255)
+        }
+
+        // Cursor: determine visibility and screen position
+        let cursorScreenRow = displayBuffer.yBase + displayBuffer.y - bufferOffset
+        let cursorCol = displayBuffer.x
+        let cursorStyle = terminal.options.cursorStyle
+        let isBlinkCursor: Bool
+        switch cursorStyle {
+        case .blinkBlock, .blinkBar, .blinkUnderline:
+            isBlinkCursor = true
+        default:
+            isBlinkCursor = false
+        }
+        let cursorBlinkOn = !isBlinkCursor || (terminalView?.blinkOn ?? true)
+        let showCursor = (terminalView?.hasFocus ?? false) && cursorBlinkOn
+            && cursorScreenRow >= 0 && cursorScreenRow < rows
+
         for row in 0..<rows {
             // Use bufferOffset (yDisp) to read the correct buffer lines
             let lineIndex = row + bufferOffset
@@ -332,6 +355,7 @@ public class MetalTerminalRenderer: TerminalRenderer {
                 continue
             }
             let line = displayBuffer.lines[lineIndex]
+            let selRange = terminalView?.selectedColumnsRange(row: lineIndex, cols: cols)
 
             for col in 0..<cols {
                 let idx = row * cols + col
@@ -370,6 +394,20 @@ public class MetalTerminalRenderer: TerminalRenderer {
                     cell.fgB = UInt8(UInt16(cell.fgB) * 2 / 3)
                 }
 
+                // Selection overlay: apply selection background color
+                if let range = selRange, range.contains(col) {
+                    cell.bgR = selR; cell.bgG = selG; cell.bgB = selB; cell.bgA = 255
+                }
+
+                // Block cursor: invert fg/bg at cursor position
+                if showCursor && row == cursorScreenRow && col == cursorCol {
+                    if cursorStyle == .blinkBlock || cursorStyle == .steadyBlock {
+                        let tmpR = cell.fgR, tmpG = cell.fgG, tmpB = cell.fgB, tmpA = cell.fgA
+                        cell.fgR = cell.bgR; cell.fgG = cell.bgG; cell.fgB = cell.bgB; cell.fgA = cell.bgA
+                        cell.bgR = tmpR; cell.bgG = tmpG; cell.bgB = tmpB; cell.bgA = tmpA
+                    }
+                }
+
                 // Pack style flags
                 var flags: UInt16 = 0
                 if ch.attribute.style.contains(CharacterStyle.bold)      { flags |= 1 << 0 }
@@ -378,6 +416,19 @@ public class MetalTerminalRenderer: TerminalRenderer {
                 if ch.attribute.style.contains(CharacterStyle.crossedOut){ flags |= 1 << 3 }
                 if ch.attribute.style.contains(CharacterStyle.inverse)   { flags |= 1 << 4 }
                 if ch.attribute.style.contains(CharacterStyle.blink)     { flags |= 1 << 5 }
+
+                // Cursor: set bar/underline decoration flags
+                if showCursor && row == cursorScreenRow && col == cursorCol {
+                    switch cursorStyle {
+                    case .blinkBar, .steadyBar:
+                        flags |= 1 << 6
+                    case .blinkUnderline, .steadyUnderline:
+                        flags |= 1 << 7
+                    default:
+                        break
+                    }
+                }
+
                 cell.flags = flags
 
                 cells[idx] = cell
@@ -721,8 +772,9 @@ public class MetalTerminalRenderer: TerminalRenderer {
         uint flags = in.flags;
         bool hasUnderline = (flags & (1u << 2)) != 0;
         bool hasStrikethrough = (flags & (1u << 3)) != 0;
+        bool hasCursorDeco = (flags & ((1u << 6) | (1u << 7))) != 0;
 
-        if (!hasUnderline && !hasStrikethrough) discard_fragment();
+        if (!hasUnderline && !hasStrikethrough && !hasCursorDeco) discard_fragment();
 
         float y = in.texCoord.y;
         float pixelH = 1.0 / uniforms.cellSize.y;
@@ -739,6 +791,19 @@ public class MetalTerminalRenderer: TerminalRenderer {
         if (hasStrikethrough) {
             float strikeY = 0.5 - 0.5 * pixelH;
             if (y >= strikeY && y < strikeY + pixelH) draw = true;
+        }
+
+        // Cursor bar: 2px vertical line on left side of cell
+        bool hasCursorBar = (flags & (1u << 6)) != 0;
+        if (hasCursorBar) {
+            float pixelW = 1.0 / uniforms.cellSize.x;
+            if (in.texCoord.x < 2.0 * pixelW) draw = true;
+        }
+
+        // Cursor underline: 2px horizontal line at bottom of cell
+        bool hasCursorUline = (flags & (1u << 7)) != 0;
+        if (hasCursorUline) {
+            if (y >= 1.0 - 2.0 * pixelH) draw = true;
         }
 
         if (!draw) discard_fragment();
