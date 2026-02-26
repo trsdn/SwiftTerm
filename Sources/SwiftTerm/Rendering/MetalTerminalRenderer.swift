@@ -88,6 +88,9 @@ public class MetalTerminalRenderer: TerminalRenderer {
     var cols: Int = 0
     var rows: Int = 0
     var cellDims: CellDimensions = CellDimensions(width: 8, height: 16, descent: 3, leading: 1)
+    /// Cell dimensions used to build the current glyph atlas (in logical pixels).
+    private var atlasCellWidth: CGFloat = 0
+    private var atlasCellHeight: CGFloat = 0
     var viewportSize: CGSize = .zero
     /// Whether the terminal is scrolled to the bottom (auto-scroll active).
     private(set) var isScrolledToBottom: Bool = true
@@ -249,8 +252,8 @@ public class MetalTerminalRenderer: TerminalRenderer {
             CATransaction.commit()
         }
 
-        // Rebuild glyph atlas if backing scale changed (e.g. window moved between displays)
-        if backingScale != atlasScale {
+        // Rebuild glyph atlas if backing scale or cell dimensions changed
+        if backingScale != atlasScale || cellDimensions.width != atlasCellWidth || cellDimensions.height != atlasCellHeight {
             glyphIndexMap.removeAll()
             glyphEntries.removeAll()
             glyphEntries.append(GlyphEntryData())
@@ -354,6 +357,8 @@ public class MetalTerminalRenderer: TerminalRenderer {
 
         // Rasterize at backing resolution for 1:1 texel-to-pixel mapping on Retina
         atlasScale = scale
+        atlasCellWidth = cellDims.width
+        atlasCellHeight = cellDims.height
         let cellW = Int(ceil(cellDims.width * scale))
         let cellH = Int(ceil(cellDims.height * scale))
 
