@@ -241,6 +241,11 @@ extension TerminalView {
         urlAttributes = [:]
         attributes = [:]
         
+        // Keep the layer background in sync so the gap below the last
+        // terminal row (when the frame height is not an exact multiple of
+        // the cell height) uses the current background color.
+        layer?.backgroundColor = nativeBackgroundColor.cgColor
+        
         terminal.updateFullScreen ()
         queuePendingDisplay()
     }

@@ -538,7 +538,12 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         updateScrollerFrame()
         updateCursorPosition()
         updateProgressBarFrame()
-        processSizeChange(newSize: frame.size)
+        if !processSizeChange(newSize: frame.size) {
+            // Frame changed without altering the terminal grid size;
+            // force a full redraw so row positions are recalculated and
+            // no stale content remains at the edges.
+            needsDisplay = true
+        }
     }
 
     public override func resizeSubviews(withOldSize oldSize: NSSize) {
