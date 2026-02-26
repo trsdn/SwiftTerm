@@ -1004,12 +1004,12 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         let maxCol = max(0, min(terminal.cols - 1, line.count - 1))
         let col = max(0, min(position.col, maxCol))
         let cell = line[col]
-        if let payload = cell.getPayload() as? String {
+        if let payload = cell.getPayload(using: terminal.payloadManager) as? String {
             return payload
         }
         if cell.code == 0 && col > 0 && line[col - 1].width == 2 {
             let base = line[col - 1]
-            if let payload = base.getPayload() as? String {
+            if let payload = base.getPayload(using: terminal.payloadManager) as? String {
                 return payload
             }
         }

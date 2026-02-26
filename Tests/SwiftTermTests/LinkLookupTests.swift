@@ -19,7 +19,7 @@ final class LinkLookupTests: TerminalDelegate {
         terminal.feed(text: "abc")
 
         let payload = "id;https://example.com"
-        let atom = TinyAtom.lookup(value: payload)!
+        let atom = terminal.payloadManager.lookup(value: payload)!
         let line = terminal.displayBuffer.lines[0]
         var cd = line[1]
         cd.setPayload(atom: atom)

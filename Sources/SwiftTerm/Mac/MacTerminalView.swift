@@ -1898,7 +1898,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         let hit = calculateMouseHit(with: event).grid
         let displayBuffer = terminal.displayBuffer
         let cd = displayBuffer.lines [hit.row][hit.col]
-        return cd.getPayload()
+        return cd.getPayload(using: terminal.payloadManager)
     }
     
     var didSelectionDrag: Bool = false
@@ -1929,7 +1929,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         let mouseHit = calculateMouseHit(with: event)
         let hit = mouseHit.grid
         if allowMouseReporting {
-            if terminal.mouseMode.sendMotionEvent() {
+            if terminal.mouseMode.sendButtonTracking() {
                 let flags = encodeMouseEvent(with: event)
                 let screenRow = max (0, min (displayBuffer.rows - 1, hit.row - displayBuffer.yDisp))
                 terminal.sendMotion(buttonFlags: flags, x: hit.col, y: screenRow, pixelX: mouseHit.pixels.col, pixelY: mouseHit.pixels.row)
@@ -2102,12 +2102,12 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         let maxCol = max(0, min(terminal.cols - 1, line.count - 1))
         let col = max(0, min(position.col, maxCol))
         let cell = line[col]
-        if let payload = cell.getPayload() as? String {
+        if let payload = cell.getPayload(using: terminal.payloadManager) as? String {
             return payload
         }
         if cell.code == 0 && col > 0 && line[col - 1].width == 2 {
             let base = line[col - 1]
-            if let payload = base.getPayload() as? String {
+            if let payload = base.getPayload(using: terminal.payloadManager) as? String {
                 return payload
             }
         }

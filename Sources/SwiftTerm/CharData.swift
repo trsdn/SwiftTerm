@@ -168,49 +168,54 @@ public struct Attribute: Equatable, Hashable {
     }
 }
 
-/// TinyAtoms are 16-bit values that can be used to represent a string as a number
-/// you create them by calling TinyAtom.lookup (Any) and retrieve the
-/// value using the `target` property.   They are used to store the urls and any
-/// additional parameter information in the OSC 8 scenario or to store binary blobs
-/// for images
-///
-/// This is kept to 16 bits for now, so that we keep the CharData to less than 15 bytes
-/// it could in theory be changed to be 24 bits without much trouble
-public struct TinyAtom {
-    var code: UInt16
-    static var map: [UInt16:Any] = [:]
-    static var lastUsed: Int = 0
-    static var lastCollected: Int = 0
-    static let empty = TinyAtom (code: 0)
-   
-    private init(code: UInt16)
-    {
-        self.code = code
-    }
-    
-    /// Returns the TinyAtom associated with the specified url, or nil if we ran out of space
-    public static func lookup (value: Any) -> TinyAtom? {
+/// Manages per-terminal payload storage for TinyAtom values.
+/// Each Terminal instance owns a PayloadManager so that payloads
+/// (hyperlink URLs, images, etc.) are scoped to that terminal and
+/// garbage-collected independently.
+public class PayloadManager {
+    var map: [UInt16: Any] = [:]
+    var lastUsed: Int = 0
+    var lastCollected: Int = 0
+
+    public init() {}
+
+    /// Associates a value and returns a TinyAtom handle, or nil if we ran out of space.
+    public func lookup(value: Any) -> TinyAtom? {
         let next = lastUsed + 1
         if next < UInt16.max {
-            map [UInt16 (next)] = value
+            map[UInt16(next)] = value
             lastUsed = next
-            return TinyAtom (code: UInt16 (next))
+            return TinyAtom(code: UInt16(next))
         }
         return nil
     }
-    
-    public static func release(code: UInt16) {
+
+    /// Removes the value associated with the given code.
+    public func release(code: UInt16) {
         map.removeValue(forKey: code)
     }
-    
-    /// Returns the target for the TinyAtom
-    public var target: Any? {
-        get {
-            if code == 0 {
-                return nil
-            }
-            return TinyAtom.map [code]
-        }
+
+    /// Resolves a TinyAtom code to its stored value.
+    public func resolve(_ atom: TinyAtom) -> Any? {
+        if atom.code == 0 { return nil }
+        return map[atom.code]
+    }
+}
+
+/// TinyAtoms are 16-bit values that can be used to represent a string as a number.
+/// Create them via ``PayloadManager/lookup(value:)`` and resolve the stored
+/// value via ``PayloadManager/resolve(_:)``.  They are used to store the urls and any
+/// additional parameter information in the OSC 8 scenario or to store binary blobs
+/// for images.
+///
+/// This is kept to 16 bits for now, so that we keep the CharData to less than 15 bytes;
+/// it could in theory be changed to be 24 bits without much trouble.
+public struct TinyAtom {
+    var code: UInt16
+    static let empty = TinyAtom(code: 0)
+
+    init(code: UInt16) {
+        self.code = code
     }
 }
 
@@ -304,9 +309,9 @@ public struct CharData: CustomDebugStringConvertible {
         self.payload = atom
     }
     
-    public func getPayload () -> Any?
+    public func getPayload (using manager: PayloadManager) -> Any?
     {
-         payload.target
+         manager.resolve(payload)
     }
     
     public var hasPayload: Bool {

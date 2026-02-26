@@ -377,6 +377,9 @@ open class Terminal {
     
     // The current buffers
     var normalBuffer, altBuffer: Buffer
+
+    /// Per-terminal storage for TinyAtom payloads (hyperlinks, images, etc.)
+    public let payloadManager = PayloadManager()
     /**
      * Returns the active buffer (either the normal buffer or the alternative buffer)
      */
@@ -1789,7 +1792,7 @@ open class Terminal {
             // We only had the terminator, so we can close ";"
             if let hlt = hyperLinkTracking {
                 let str = hlt.payload
-                if let urlToken = TinyAtom.lookup (value: str) {
+                if let urlToken = payloadManager.lookup (value: str) {
                     //print ("Setting the text from \(hlt.start) to \(buffer.x) on line \(buffer.y+buffer.yBase) to \(str)")
                     
                     // Between the time the flag was set, and now `y` might have changed negatively,
@@ -5170,7 +5173,7 @@ open class Terminal {
      */
     public func garbageCollectPayload() {
         // stop right away if there is nothing to collect
-        if TinyAtom.lastCollected == TinyAtom.lastUsed {
+        if payloadManager.lastCollected == payloadManager.lastUsed {
             return
         }
         
@@ -5192,14 +5195,14 @@ open class Terminal {
         
         // since we create atoms in order we expect them to run out of use
         // in order as well and stop with first atom that is still in use
-        for code in UInt16(TinyAtom.lastCollected + 1)...UInt16(TinyAtom.lastUsed) {
+        for code in UInt16(payloadManager.lastCollected + 1)...UInt16(payloadManager.lastUsed) {
             if used.contains(code) {
                 // code still in use
                 break
             }
             
-            TinyAtom.lastCollected = Int(code)
-            TinyAtom.release(code: code)
+            payloadManager.lastCollected = Int(code)
+            payloadManager.release(code: code)
         }
     }
     
@@ -6079,7 +6082,7 @@ open class Terminal {
     private func explicitLink(at position: Position, in buffer: Buffer) -> String?
     {
         let line = buffer.lines[position.row]
-        guard let payload = line[position.col].getPayload() as? String else {
+        guard let payload = line[position.col].getPayload(using: payloadManager) as? String else {
             return nil
         }
         return parseHyperlinkPayload(payload)
@@ -6115,8 +6118,8 @@ open class Terminal {
         guard start < end else {
             return nil
         }
-        let rawPayload = line[position.col].getPayload() as? String
-            ?? line[max(0, position.col - 1)].getPayload() as? String
+        let rawPayload = line[position.col].getPayload(using: payloadManager) as? String
+            ?? line[max(0, position.col - 1)].getPayload(using: payloadManager) as? String
         guard let payload = rawPayload, let url = parseHyperlinkPayload(payload) else {
             return nil
         }
