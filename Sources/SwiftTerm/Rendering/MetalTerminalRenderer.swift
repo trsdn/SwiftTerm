@@ -1,0 +1,623 @@
+//
+//  MetalTerminalRenderer.swift
+//
+//  GPU-accelerated terminal renderer using Metal.
+//  Renders terminal cells in two passes: background quads, then text glyphs.
+//  Shader source is compiled at runtime for SPM compatibility.
+//
+
+#if os(macOS)
+import Metal
+import MetalKit
+import QuartzCore
+import CoreText
+import AppKit
+
+// MARK: - GPU Data Structures
+
+/// Per-cell data sent to the GPU. Must match the CellData struct in the shader.
+struct CellData {
+    var glyphIndex: UInt16 = 0
+    var fgR: UInt8 = 255, fgG: UInt8 = 255, fgB: UInt8 = 255, fgA: UInt8 = 255
+    var bgR: UInt8 = 0, bgG: UInt8 = 0, bgB: UInt8 = 0, bgA: UInt8 = 255
+    var flags: UInt16 = 0
+    var padding: UInt16 = 0
+}
+
+/// Per-glyph entry in the glyph lookup buffer. Must match GlyphEntry in the shader.
+struct GlyphEntryData {
+    var uvRect: SIMD4<Float> = .zero   // u0, v0, u1, v1
+    var bearing: SIMD2<Float> = .zero  // bearingX, bearingY
+    var size: SIMD2<Float> = .zero     // glyph width, height in pixels
+}
+
+/// Uniform data for the shader. Must match Uniforms in the shader.
+struct Uniforms {
+    var viewportSize: SIMD2<Float> = .zero
+    var cellSize: SIMD2<Float> = .zero
+    var atlasSize: SIMD2<Float> = .zero
+    var cols: UInt32 = 0
+    var rows: UInt32 = 0
+    var time: Float = 0
+    var blinkOn: UInt32 = 1
+}
+
+// MARK: - MetalTerminalRenderer
+
+/// GPU-accelerated terminal renderer using Metal.
+///
+/// Renders the terminal in two instanced draw passes:
+/// 1. **Background pass** — draws colored quads for each cell's background
+/// 2. **Text pass** — draws glyph alpha from the atlas, tinted with foreground color
+public class MetalTerminalRenderer: TerminalRenderer {
+
+    // MARK: - Metal Core
+
+    let device: MTLDevice
+    let commandQueue: MTLCommandQueue
+    var bgPipelineState: MTLRenderPipelineState
+    var textPipelineState: MTLRenderPipelineState
+
+    // MARK: - Buffers
+
+    var cellBuffer: MTLBuffer?
+    var glyphEntryBuffer: MTLBuffer?
+    var uniformBuffer: MTLBuffer
+
+    // MARK: - Atlas & View
+
+    var glyphAtlas: GlyphAtlas?
+    weak var terminalView: TerminalView?
+    var metalLayer: CAMetalLayer?
+
+    // MARK: - State
+
+    var cols: Int = 0
+    var rows: Int = 0
+    var cellDims: CellDimensions = CellDimensions(width: 8, height: 16, descent: 3, leading: 1)
+    var viewportSize: CGSize = .zero
+
+    /// Map from GlyphKey to glyph entry index in the GPU buffer.
+    private var glyphIndexMap: [GlyphKey: UInt16] = [:]
+    /// Ordered glyph entries for the GPU buffer.
+    private var glyphEntries: [GlyphEntryData] = []
+    /// Whether the glyph entry buffer needs updating.
+    private var glyphBufferDirty = true
+
+    // MARK: - Availability
+
+    /// Returns `true` if a Metal device is available on this system.
+    public static var isAvailable: Bool {
+        return MTLCreateSystemDefaultDevice() != nil
+    }
+
+    // MARK: - Initialization
+
+    /// Creates a new Metal terminal renderer.
+    ///
+    /// - Parameter device: The Metal device to use. Defaults to the system default device.
+    /// - Throws: `fatalError` if Metal is not available or pipeline creation fails.
+    public init(device: MTLDevice? = nil) {
+        guard let dev = device ?? MTLCreateSystemDefaultDevice() else {
+            fatalError("MetalTerminalRenderer: Metal is not available on this system")
+        }
+        self.device = dev
+
+        guard let queue = dev.makeCommandQueue() else {
+            fatalError("MetalTerminalRenderer: failed to create command queue")
+        }
+        self.commandQueue = queue
+
+        // Compile shaders from embedded source
+        let library: MTLLibrary
+        do {
+            library = try dev.makeLibrary(source: MetalTerminalRenderer.shaderSource, options: nil)
+        } catch {
+            fatalError("MetalTerminalRenderer: failed to compile shaders: \(error)")
+        }
+
+        // Background pipeline
+        let bgDesc = MTLRenderPipelineDescriptor()
+        bgDesc.vertexFunction = library.makeFunction(name: "bgVertex")
+        bgDesc.fragmentFunction = library.makeFunction(name: "bgFragment")
+        bgDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
+        do {
+            bgPipelineState = try dev.makeRenderPipelineState(descriptor: bgDesc)
+        } catch {
+            fatalError("MetalTerminalRenderer: failed to create bg pipeline: \(error)")
+        }
+
+        // Text pipeline (alpha blending enabled)
+        let textDesc = MTLRenderPipelineDescriptor()
+        textDesc.vertexFunction = library.makeFunction(name: "textVertex")
+        textDesc.fragmentFunction = library.makeFunction(name: "textFragment")
+        textDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
+        textDesc.colorAttachments[0].isBlendingEnabled = true
+        textDesc.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+        textDesc.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        textDesc.colorAttachments[0].sourceAlphaBlendFactor = .one
+        textDesc.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        do {
+            textPipelineState = try dev.makeRenderPipelineState(descriptor: textDesc)
+        } catch {
+            fatalError("MetalTerminalRenderer: failed to create text pipeline: \(error)")
+        }
+
+        // Uniform buffer
+        var uniforms = Uniforms()
+        uniformBuffer = dev.makeBuffer(bytes: &uniforms, length: MemoryLayout<Uniforms>.stride, options: .storageModeShared)!
+
+        // Reserve glyph index 0 as "empty / space" glyph
+        glyphEntries.append(GlyphEntryData())
+    }
+
+    // MARK: - TerminalRenderer Protocol
+
+    public func setup(view: TerminalView) {
+        self.terminalView = view
+
+        // Configure CAMetalLayer on the view's layer
+        guard let viewLayer = view.layer else {
+            view.wantsLayer = true
+            guard let newLayer = view.layer else {
+                fatalError("MetalTerminalRenderer: failed to get layer from view")
+            }
+            setupMetalLayer(on: newLayer, size: view.bounds.size)
+            return
+        }
+        setupMetalLayer(on: viewLayer, size: view.bounds.size)
+
+        // Set up glyph atlas with the view's font set
+        setupGlyphAtlas()
+    }
+
+    public func draw(
+        in context: CGContext,
+        dirtyRect: CGRect,
+        cellDimensions: CellDimensions,
+        bufferOffset: Int
+    ) {
+        self.cellDims = cellDimensions
+
+        guard let view = terminalView else { return }
+        let terminal = view.terminal!
+
+        // Update viewport size
+        let backingScale = view.window?.backingScaleFactor ?? 1.0
+        let drawableWidth = view.bounds.width * backingScale
+        let drawableHeight = view.bounds.height * backingScale
+        viewportSize = CGSize(width: drawableWidth, height: drawableHeight)
+
+        metalLayer?.drawableSize = CGSize(width: drawableWidth, height: drawableHeight)
+        metalLayer?.contentsScale = backingScale
+
+        // Populate cell buffer from terminal state
+        let displayBuffer = terminal.buffer
+        let termCols = terminal.cols
+        let termRows = terminal.rows
+        self.cols = termCols
+        self.rows = termRows
+
+        updateCellBuffer(terminal: terminal, displayBuffer: displayBuffer, cols: termCols, rows: termRows, bufferOffset: bufferOffset)
+
+        // Update uniforms
+        updateUniforms(backingScale: Float(backingScale))
+
+        // Update glyph entry buffer if needed
+        if glyphBufferDirty {
+            updateGlyphEntryBuffer()
+        }
+
+        // Render
+        renderFrame()
+    }
+
+    public func resize(cols: Int, rows: Int, cellDimensions: CellDimensions) {
+        self.cols = cols
+        self.rows = rows
+        self.cellDims = cellDimensions
+
+        // Recreate cell buffer for new dimensions
+        let cellCount = cols * rows
+        let bufferSize = cellCount * MemoryLayout<CellData>.stride
+        cellBuffer = device.makeBuffer(length: bufferSize, options: .storageModeShared)
+    }
+
+    public func colorsChanged() {
+        // Colors are read fresh each frame from the terminal buffer
+    }
+
+    public func fontChanged() {
+        // Rebuild glyph atlas with new fonts
+        glyphIndexMap.removeAll()
+        glyphEntries.removeAll()
+        glyphEntries.append(GlyphEntryData()) // re-reserve index 0
+        glyphBufferDirty = true
+
+        setupGlyphAtlas()
+    }
+
+    public func invalidateAll() {
+        glyphAtlas?.invalidateAll()
+        glyphIndexMap.removeAll()
+        glyphEntries.removeAll()
+        glyphEntries.append(GlyphEntryData()) // re-reserve index 0
+        glyphBufferDirty = true
+    }
+
+    // MARK: - Internal Setup
+
+    private func setupMetalLayer(on layer: CALayer, size: CGSize) {
+        let metal = CAMetalLayer()
+        metal.device = device
+        metal.pixelFormat = .bgra8Unorm
+        metal.framebufferOnly = true
+        metal.frame = CGRect(origin: .zero, size: size)
+        metal.contentsScale = NSScreen.main?.backingScaleFactor ?? 2.0
+        metal.drawableSize = CGSize(
+            width: size.width * metal.contentsScale,
+            height: size.height * metal.contentsScale
+        )
+
+        layer.addSublayer(metal)
+        self.metalLayer = metal
+    }
+
+    private func setupGlyphAtlas() {
+        guard let view = terminalView else { return }
+
+        let fontSet = view.fontSet
+        let atlasFonts = GlyphAtlasFontSet(
+            normal: fontSet.normal,
+            bold: fontSet.bold,
+            italic: fontSet.italic,
+            boldItalic: fontSet.boldItalic
+        )
+
+        let cellW = Int(ceil(cellDims.width))
+        let cellH = Int(ceil(cellDims.height))
+
+        glyphAtlas = GlyphAtlas(
+            device: device,
+            cellWidth: cellW,
+            cellHeight: cellH,
+            fonts: atlasFonts
+        )
+    }
+
+    // MARK: - Cell Buffer Update
+
+    private func updateCellBuffer(terminal: Terminal, displayBuffer: Buffer, cols: Int, rows: Int, bufferOffset: Int) {
+        let cellCount = cols * rows
+        let requiredSize = cellCount * MemoryLayout<CellData>.stride
+
+        // Recreate buffer if size changed
+        if cellBuffer == nil || cellBuffer!.length < requiredSize {
+            cellBuffer = device.makeBuffer(length: requiredSize, options: .storageModeShared)
+        }
+
+        guard let buffer = cellBuffer else { return }
+        let cells = buffer.contents().bindMemory(to: CellData.self, capacity: cellCount)
+
+        for row in 0..<rows {
+            let lineIndex = row + displayBuffer.yDisp
+            guard lineIndex >= 0, lineIndex < displayBuffer.lines.count else {
+                for col in 0..<cols {
+                    cells[row * cols + col] = CellData()
+                }
+                continue
+            }
+            let line = displayBuffer.lines[lineIndex]
+
+            for col in 0..<cols {
+                let idx = row * cols + col
+                let ch = line[col]
+
+                var cell = CellData()
+
+                // Resolve glyph
+                let codePoint = UInt32(ch.code > 0 ? ch.code : 32) // space for empty cells
+                let style = glyphStyle(from: ch.attribute.style)
+                cell.glyphIndex = getOrCreateGlyphIndex(codePoint: codePoint, style: style)
+
+                // Resolve colors
+                let (fgR, fgG, fgB) = resolveColor(ch.attribute.fg, isFg: true, terminal: terminal)
+                let (bgR, bgG, bgB) = resolveColor(ch.attribute.bg, isFg: false, terminal: terminal)
+
+                // Handle inverse
+                let isInverse = ch.attribute.style.contains(CharacterStyle.inverse)
+                if isInverse {
+                    cell.fgR = bgR; cell.fgG = bgG; cell.fgB = bgB; cell.fgA = 255
+                    cell.bgR = fgR; cell.bgG = fgG; cell.bgB = fgB; cell.bgA = 255
+                } else {
+                    cell.fgR = fgR; cell.fgG = fgG; cell.fgB = fgB; cell.fgA = 255
+                    cell.bgR = bgR; cell.bgG = bgG; cell.bgB = bgB; cell.bgA = 255
+                }
+
+                // Pack style flags
+                var flags: UInt16 = 0
+                if ch.attribute.style.contains(CharacterStyle.bold)      { flags |= 1 << 0 }
+                if ch.attribute.style.contains(CharacterStyle.italic)    { flags |= 1 << 1 }
+                if ch.attribute.style.contains(CharacterStyle.underline) { flags |= 1 << 2 }
+                if ch.attribute.style.contains(CharacterStyle.crossedOut){ flags |= 1 << 3 }
+                if ch.attribute.style.contains(CharacterStyle.inverse)   { flags |= 1 << 4 }
+                if ch.attribute.style.contains(CharacterStyle.blink)     { flags |= 1 << 5 }
+                cell.flags = flags
+
+                cells[idx] = cell
+            }
+        }
+    }
+
+    // MARK: - Color Resolution
+
+    /// Resolves an `Attribute.Color` to RGB uint8 values.
+    private func resolveColor(_ color: Attribute.Color, isFg: Bool, terminal: Terminal) -> (UInt8, UInt8, UInt8) {
+        switch color {
+        case .defaultColor:
+            let c = isFg ? terminal.foregroundColor : terminal.backgroundColor
+            return (UInt8(c.red >> 8), UInt8(c.green >> 8), UInt8(c.blue >> 8))
+        case .defaultInvertedColor:
+            let c = isFg ? terminal.backgroundColor : terminal.foregroundColor
+            return (UInt8(c.red >> 8), UInt8(c.green >> 8), UInt8(c.blue >> 8))
+        case .ansi256(let code):
+            let c = terminal.ansiColors[Int(code)]
+            return (UInt8(c.red >> 8), UInt8(c.green >> 8), UInt8(c.blue >> 8))
+        case .trueColor(let r, let g, let b):
+            return (r, g, b)
+        }
+    }
+
+    // MARK: - Glyph Management
+
+    /// Maps a `CharacterStyle` to a `GlyphStyle` for atlas lookup.
+    private func glyphStyle(from style: CharacterStyle) -> GlyphStyle {
+        let isBold = style.contains(.bold)
+        let isItalic = style.contains(.italic)
+        if isBold && isItalic { return .boldItalic }
+        if isBold { return .bold }
+        if isItalic { return .italic }
+        return .normal
+    }
+
+    /// Returns the GPU glyph index for the given code point and style,
+    /// rasterizing into the atlas on cache miss.
+    private func getOrCreateGlyphIndex(codePoint: UInt32, style: GlyphStyle) -> UInt16 {
+        // Space or control characters → index 0 (empty glyph)
+        if codePoint <= 32 { return 0 }
+
+        let key = GlyphKey(codePoint: codePoint, style: style)
+        if let existing = glyphIndexMap[key] {
+            return existing
+        }
+
+        guard let atlas = glyphAtlas,
+              let info = atlas.getOrCreate(codePoint: codePoint, style: style) else {
+            return 0
+        }
+
+        let index = UInt16(glyphEntries.count)
+        let entry = GlyphEntryData(
+            uvRect: SIMD4<Float>(info.u0, info.v0, info.u1, info.v1),
+            bearing: SIMD2<Float>(info.bearingX, info.bearingY),
+            size: SIMD2<Float>(Float(info.width), Float(info.height))
+        )
+        glyphEntries.append(entry)
+        glyphIndexMap[key] = index
+        glyphBufferDirty = true
+
+        return index
+    }
+
+    // MARK: - Buffer Updates
+
+    private func updateUniforms(backingScale: Float) {
+        var uniforms = Uniforms()
+        uniforms.viewportSize = SIMD2<Float>(Float(viewportSize.width), Float(viewportSize.height))
+        uniforms.cellSize = SIMD2<Float>(Float(cellDims.width) * backingScale, Float(cellDims.height) * backingScale)
+        uniforms.atlasSize = SIMD2<Float>(Float(GlyphAtlas.atlasSize), Float(GlyphAtlas.atlasSize))
+        uniforms.cols = UInt32(cols)
+        uniforms.rows = UInt32(rows)
+        uniforms.time = Float(CACurrentMediaTime())
+        uniforms.blinkOn = 1
+
+        let ptr = uniformBuffer.contents().bindMemory(to: Uniforms.self, capacity: 1)
+        ptr.pointee = uniforms
+    }
+
+    private func updateGlyphEntryBuffer() {
+        let size = glyphEntries.count * MemoryLayout<GlyphEntryData>.stride
+        guard size > 0 else { return }
+
+        glyphEntryBuffer = device.makeBuffer(
+            bytes: &glyphEntries,
+            length: size,
+            options: .storageModeShared
+        )
+        glyphBufferDirty = false
+    }
+
+    // MARK: - Rendering
+
+    private func renderFrame() {
+        guard let layer = metalLayer,
+              let drawable = layer.nextDrawable(),
+              let cellBuf = cellBuffer,
+              let glyphBuf = glyphEntryBuffer else {
+            return
+        }
+
+        let cellCount = cols * rows
+        guard cellCount > 0 else { return }
+
+        let passDescriptor = MTLRenderPassDescriptor()
+        passDescriptor.colorAttachments[0].texture = drawable.texture
+        passDescriptor.colorAttachments[0].loadAction = .clear
+        passDescriptor.colorAttachments[0].storeAction = .store
+        passDescriptor.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1)
+
+        guard let commandBuffer = commandQueue.makeCommandBuffer(),
+              let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: passDescriptor) else {
+            return
+        }
+
+        // Background pass
+        encoder.setRenderPipelineState(bgPipelineState)
+        encoder.setVertexBuffer(cellBuf, offset: 0, index: 0)
+        encoder.setVertexBuffer(uniformBuffer, offset: 0, index: 1)
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: cellCount)
+
+        // Text pass
+        encoder.setRenderPipelineState(textPipelineState)
+        encoder.setVertexBuffer(cellBuf, offset: 0, index: 0)
+        encoder.setVertexBuffer(uniformBuffer, offset: 0, index: 1)
+        encoder.setVertexBuffer(glyphBuf, offset: 0, index: 2)
+        if let atlasTexture = glyphAtlas?.atlasTexture {
+            encoder.setFragmentTexture(atlasTexture, index: 0)
+        }
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: cellCount)
+
+        encoder.endEncoding()
+        commandBuffer.present(drawable)
+        commandBuffer.commit()
+    }
+
+    // MARK: - Embedded Shader Source
+
+    /// Metal shader source compiled at runtime for SPM compatibility.
+    static let shaderSource = """
+    #include <metal_stdlib>
+    using namespace metal;
+
+    struct CellData {
+        uint16_t glyphIndex;
+        uint8_t  fgR, fgG, fgB, fgA;
+        uint8_t  bgR, bgG, bgB, bgA;
+        uint16_t flags;
+        uint16_t padding;
+    };
+
+    struct Uniforms {
+        float2 viewportSize;
+        float2 cellSize;
+        float2 atlasSize;
+        uint32_t cols;
+        uint32_t rows;
+        float time;
+        uint32_t blinkOn;
+    };
+
+    struct GlyphEntry {
+        float4 uvRect;
+        float2 bearing;
+        float2 size;
+    };
+
+    struct VertexOut {
+        float4 position [[position]];
+        float2 texCoord;
+        float4 fgColor;
+        float4 bgColor;
+        uint flags;
+    };
+
+    // ---- Background Pass ----
+
+    vertex VertexOut bgVertex(
+        uint vertexID [[vertex_id]],
+        uint instanceID [[instance_id]],
+        constant CellData* cells [[buffer(0)]],
+        constant Uniforms& uniforms [[buffer(1)]]
+    ) {
+        uint col = instanceID % uniforms.cols;
+        uint row = instanceID / uniforms.cols;
+
+        float2 positions[6] = {
+            {0, 0}, {1, 0}, {0, 1},
+            {1, 0}, {1, 1}, {0, 1}
+        };
+
+        float2 pos = positions[vertexID];
+        float2 cellOrigin = float2(col, row) * uniforms.cellSize;
+        float2 pixelPos = cellOrigin + pos * uniforms.cellSize;
+
+        float2 clipPos = (pixelPos / uniforms.viewportSize) * 2.0 - 1.0;
+        clipPos.y = -clipPos.y;
+
+        CellData cell = cells[instanceID];
+        float4 bg = float4(cell.bgR, cell.bgG, cell.bgB, cell.bgA) / 255.0;
+
+        VertexOut out;
+        out.position = float4(clipPos, 0.0, 1.0);
+        out.bgColor = bg;
+        out.texCoord = float2(0);
+        out.fgColor = float4(0);
+        out.flags = 0;
+        return out;
+    }
+
+    fragment float4 bgFragment(VertexOut in [[stage_in]]) {
+        return in.bgColor;
+    }
+
+    // ---- Text Pass ----
+
+    vertex VertexOut textVertex(
+        uint vertexID [[vertex_id]],
+        uint instanceID [[instance_id]],
+        constant CellData* cells [[buffer(0)]],
+        constant Uniforms& uniforms [[buffer(1)]],
+        constant GlyphEntry* glyphs [[buffer(2)]]
+    ) {
+        uint col = instanceID % uniforms.cols;
+        uint row = instanceID / uniforms.cols;
+
+        CellData cell = cells[instanceID];
+        GlyphEntry glyph = glyphs[cell.glyphIndex];
+
+        float2 positions[6] = {
+            {0, 0}, {1, 0}, {0, 1},
+            {1, 0}, {1, 1}, {0, 1}
+        };
+        float2 texCoords[6] = {
+            {glyph.uvRect.x, glyph.uvRect.y},
+            {glyph.uvRect.z, glyph.uvRect.y},
+            {glyph.uvRect.x, glyph.uvRect.w},
+            {glyph.uvRect.z, glyph.uvRect.y},
+            {glyph.uvRect.z, glyph.uvRect.w},
+            {glyph.uvRect.x, glyph.uvRect.w}
+        };
+
+        float2 pos = positions[vertexID];
+        float2 cellOrigin = float2(col, row) * uniforms.cellSize;
+        float2 glyphOrigin = cellOrigin + float2(glyph.bearing.x, glyph.bearing.y);
+        float2 pixelPos = glyphOrigin + pos * glyph.size;
+
+        float2 clipPos = (pixelPos / uniforms.viewportSize) * 2.0 - 1.0;
+        clipPos.y = -clipPos.y;
+
+        float4 fg = float4(cell.fgR, cell.fgG, cell.fgB, cell.fgA) / 255.0;
+
+        VertexOut out;
+        out.position = float4(clipPos, 0.0, 1.0);
+        out.texCoord = texCoords[vertexID];
+        out.fgColor = fg;
+        out.bgColor = float4(0);
+        out.flags = cell.flags;
+        return out;
+    }
+
+    fragment float4 textFragment(
+        VertexOut in [[stage_in]],
+        texture2d<float> atlas [[texture(0)]]
+    ) {
+        constexpr sampler s(filter::linear);
+        float alpha = atlas.sample(s, in.texCoord).r;
+
+        if (alpha < 0.01) discard_fragment();
+
+        return float4(in.fgColor.rgb, in.fgColor.a * alpha);
+    }
+    """
+}
+#endif
