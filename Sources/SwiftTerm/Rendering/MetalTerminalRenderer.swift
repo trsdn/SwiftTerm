@@ -43,13 +43,21 @@ struct Uniforms {
     var scrollY: Float = 0          // Viewport scroll offset in pixels (for smooth scrolling)
 }
 
+/// Per-image-quad data sent to the GPU for image rendering.
+struct ImageQuadData {
+    var position: SIMD2<Float> = .zero  // top-left pixel position
+    var size: SIMD2<Float> = .zero      // size in pixels
+}
+
 // MARK: - MetalTerminalRenderer
 
 /// GPU-accelerated terminal renderer using Metal.
 ///
-/// Renders the terminal in two instanced draw passes:
+/// Renders the terminal in four instanced draw passes:
 /// 1. **Background pass** — draws colored quads for each cell's background
 /// 2. **Text pass** — draws glyph alpha from the atlas, tinted with foreground color
+/// 3. **Decoration pass** — underline, strikethrough, cursor decorations
+/// 4. **Image pass** — draws Sixel/Kitty images as textured quads
 public class MetalTerminalRenderer: TerminalRenderer {
 
     // MARK: - Metal Core
@@ -59,6 +67,7 @@ public class MetalTerminalRenderer: TerminalRenderer {
     var bgPipelineState: MTLRenderPipelineState
     var textPipelineState: MTLRenderPipelineState
     var decoPipelineState: MTLRenderPipelineState
+    var imagePipelineState: MTLRenderPipelineState
 
     // MARK: - Buffers
 
@@ -87,6 +96,13 @@ public class MetalTerminalRenderer: TerminalRenderer {
     private var glyphEntries: [GlyphEntryData] = []
     /// Whether the glyph entry buffer needs updating.
     private var glyphBufferDirty = true
+
+    // MARK: - Image Cache
+
+    /// Cache of MTLTextures keyed by the identity of the source TerminalImage object.
+    private var imageTextureCache: [ObjectIdentifier: MTLTexture] = [:]
+    /// Image quads collected during cell buffer update, rendered in the image pass.
+    private var pendingImageQuads: [(quad: ImageQuadData, texture: MTLTexture)] = []
 
     // MARK: - Availability
 
@@ -163,6 +179,22 @@ public class MetalTerminalRenderer: TerminalRenderer {
             fatalError("MetalTerminalRenderer: failed to create deco pipeline: \(error)")
         }
 
+        // Image pipeline (alpha blending for Sixel/Kitty images)
+        let imgDesc = MTLRenderPipelineDescriptor()
+        imgDesc.vertexFunction = library.makeFunction(name: "imageVertex")
+        imgDesc.fragmentFunction = library.makeFunction(name: "imageFragment")
+        imgDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
+        imgDesc.colorAttachments[0].isBlendingEnabled = true
+        imgDesc.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+        imgDesc.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        imgDesc.colorAttachments[0].sourceAlphaBlendFactor = .one
+        imgDesc.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        do {
+            imagePipelineState = try dev.makeRenderPipelineState(descriptor: imgDesc)
+        } catch {
+            fatalError("MetalTerminalRenderer: failed to create image pipeline: \(error)")
+        }
+
         // Uniform buffer
         var uniforms = Uniforms()
         uniformBuffer = dev.makeBuffer(bytes: &uniforms, length: MemoryLayout<Uniforms>.stride, options: .storageModeShared)!
@@ -220,6 +252,9 @@ public class MetalTerminalRenderer: TerminalRenderer {
 
         updateCellBuffer(terminal: terminal, displayBuffer: displayBuffer, cols: termCols, rows: termRows, bufferOffset: bufferOffset)
 
+        // Collect image quads from visible buffer lines
+        collectImageQuads(displayBuffer: displayBuffer, rows: termRows, bufferOffset: bufferOffset, backingScale: backingScale)
+
         // Update uniforms
         updateUniforms(backingScale: Float(backingScale))
 
@@ -253,6 +288,7 @@ public class MetalTerminalRenderer: TerminalRenderer {
         glyphEntries.removeAll()
         glyphEntries.append(GlyphEntryData()) // re-reserve index 0
         glyphBufferDirty = true
+        imageTextureCache.removeAll()
 
         setupGlyphAtlas()
     }
@@ -263,6 +299,7 @@ public class MetalTerminalRenderer: TerminalRenderer {
         glyphEntries.removeAll()
         glyphEntries.append(GlyphEntryData()) // re-reserve index 0
         glyphBufferDirty = true
+        imageTextureCache.removeAll()
     }
 
     // MARK: - Internal Setup
@@ -455,6 +492,91 @@ public class MetalTerminalRenderer: TerminalRenderer {
         }
     }
 
+    // MARK: - Image Collection
+
+    /// Scans visible buffer lines for attached images and builds GPU-ready image quads.
+    private func collectImageQuads(displayBuffer: Buffer, rows: Int, bufferOffset: Int, backingScale: CGFloat) {
+        pendingImageQuads.removeAll()
+        var referencedImages = Set<ObjectIdentifier>()
+        let scale = Float(backingScale)
+
+        for row in 0..<rows {
+            let lineIndex = row + bufferOffset
+            guard lineIndex >= 0, lineIndex < displayBuffer.lines.count else { continue }
+            let line = displayBuffer.lines[lineIndex]
+            guard let images = line.images else { continue }
+
+            for img in images {
+                guard let texture = getOrCreateTexture(for: img) else { continue }
+                let oid = ObjectIdentifier(img as AnyObject)
+                referencedImages.insert(oid)
+
+                let quad = ImageQuadData(
+                    position: SIMD2<Float>(Float(img.col) * Float(cellDims.width) * scale,
+                                           Float(row) * Float(cellDims.height) * scale),
+                    size: SIMD2<Float>(Float(img.pixelWidth), Float(img.pixelHeight))
+                )
+                pendingImageQuads.append((quad: quad, texture: texture))
+            }
+        }
+
+        // Evict textures for images no longer visible
+        let cachedKeys = Array(imageTextureCache.keys)
+        for key in cachedKeys where !referencedImages.contains(key) {
+            imageTextureCache.removeValue(forKey: key)
+        }
+    }
+
+    /// Returns a cached MTLTexture for the given image, creating one on cache miss.
+    private func getOrCreateTexture(for image: TerminalImage) -> MTLTexture? {
+        let oid = ObjectIdentifier(image as AnyObject)
+        if let cached = imageTextureCache[oid] {
+            return cached
+        }
+
+        guard let appleImage = image as? TerminalView.AppleImage else { return nil }
+        guard let cgImage = appleImage.image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+
+        let width = cgImage.width
+        let height = cgImage.height
+        guard width > 0, height > 0 else { return nil }
+
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba8Unorm,
+            width: width,
+            height: height,
+            mipmapped: false
+        )
+        descriptor.usage = .shaderRead
+        guard let texture = device.makeTexture(descriptor: descriptor) else { return nil }
+
+        // Render the CGImage into RGBA8 pixel data
+        let bytesPerRow = 4 * width
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        var pixelData = [UInt8](repeating: 0, count: bytesPerRow * height)
+        guard let ctx = CGContext(
+            data: &pixelData,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+
+        ctx.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        texture.replace(
+            region: MTLRegionMake2D(0, 0, width, height),
+            mipmapLevel: 0,
+            withBytes: pixelData,
+            bytesPerRow: bytesPerRow
+        )
+
+        imageTextureCache[oid] = texture
+        return texture
+    }
+
     // MARK: - Glyph Management
 
     /// Maps a `CharacterStyle` to a `GlyphStyle` for atlas lookup.
@@ -574,6 +696,19 @@ public class MetalTerminalRenderer: TerminalRenderer {
         encoder.setVertexBuffer(uniformBuffer, offset: 0, index: 1)
         encoder.setFragmentBuffer(uniformBuffer, offset: 0, index: 0)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: cellCount)
+
+        // Image pass (Sixel/Kitty images as textured quads)
+        if !pendingImageQuads.isEmpty {
+            encoder.setRenderPipelineState(imagePipelineState)
+            encoder.setVertexBuffer(uniformBuffer, offset: 0, index: 1)
+            for entry in pendingImageQuads {
+                var quad = entry.quad
+                guard let quadBuffer = device.makeBuffer(bytes: &quad, length: MemoryLayout<ImageQuadData>.stride, options: .storageModeShared) else { continue }
+                encoder.setVertexBuffer(quadBuffer, offset: 0, index: 0)
+                encoder.setFragmentTexture(entry.texture, index: 0)
+                encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+            }
+        }
 
         encoder.endEncoding()
         commandBuffer.present(drawable)
@@ -809,6 +944,52 @@ public class MetalTerminalRenderer: TerminalRenderer {
         if (!draw) discard_fragment();
 
         return in.fgColor;
+    }
+
+    // ---- Image Pass (Sixel/Kitty textured quads) ----
+
+    struct ImageQuad {
+        float2 position;  // top-left in pixels
+        float2 size;      // width, height in pixels
+    };
+
+    struct ImageVertexOut {
+        float4 position [[position]];
+        float2 texCoord;
+    };
+
+    vertex ImageVertexOut imageVertex(
+        uint vertexID [[vertex_id]],
+        constant ImageQuad& quad [[buffer(0)]],
+        constant Uniforms& uniforms [[buffer(1)]]
+    ) {
+        float2 positions[6] = {
+            {0, 0}, {1, 0}, {0, 1},
+            {1, 0}, {1, 1}, {0, 1}
+        };
+        float2 uvs[6] = {
+            {0, 0}, {1, 0}, {0, 1},
+            {1, 0}, {1, 1}, {0, 1}
+        };
+
+        float2 pos = positions[vertexID];
+        float2 pixelPos = quad.position + pos * quad.size;
+
+        float2 clipPos = (pixelPos / uniforms.viewportSize) * 2.0 - 1.0;
+        clipPos.y = -clipPos.y;
+
+        ImageVertexOut out;
+        out.position = float4(clipPos, 0.0, 1.0);
+        out.texCoord = uvs[vertexID];
+        return out;
+    }
+
+    fragment float4 imageFragment(
+        ImageVertexOut in [[stage_in]],
+        texture2d<float> imageTexture [[texture(0)]]
+    ) {
+        constexpr sampler s(filter::linear);
+        return imageTexture.sample(s, in.texCoord);
     }
     """
 }
