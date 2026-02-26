@@ -5875,7 +5875,7 @@ open class Terminal {
         let newLine = Data([10])
         for row in 0..<b.lines.count {
             let bufferLine = b.lines [row]
-            let str = bufferLine.translateToString(trimRight: true)
+            let str = bufferLine.translateToString(trimRight: true, characterProvider: { self.getCharacter(for: $0) })
             if let encoded = str.data(using: encoding) {
                 result.append (encoded)
                 result.append (newLine)

@@ -625,5 +625,26 @@ final class SwiftTermUnicode {
         #expect(t.buffer.y == 1)  // Should be on second line
     }
 
+    /// Test Thai combining marks (issue #312)
+    /// Thai vowel signs like U+0E34 (SARA I) have canonicalCombiningClass == .notReordered
+    /// but are nonspacingMark category and should still combine with the base character.
+    @Test func testThaiCombiningMarks() {
+        let h = HeadlessTerminal(queue: SwiftTermTests.queue) { _ in }
+        let t = h.terminal!
+
+        // "สิ" = ส (U+0E2A) + ิ (U+0E34, THAI CHARACTER SARA I)
+        t.feed(text: "\u{0E2A}\u{0E34}x")
+
+        // Should combine into single grapheme "สิ"
+        let combinedChar = t.getCharacter(col: 0, row: 0)
+        #expect(combinedChar == "สิ")
+
+        // Should be width 1
+        #expect(t.getCharData(col: 0, row: 0)?.width == 1)
+
+        // 'x' should be at col 1, not col 2
+        #expect(t.getCharacter(col: 1, row: 0) == "x")
+    }
+
 }
 #endif
