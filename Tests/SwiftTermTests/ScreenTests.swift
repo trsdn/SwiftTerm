@@ -647,4 +647,41 @@ final class ScreenTests {
         #expect(terminal.buffer.scrollTop == 0)
         #expect(terminal.buffer.scrollBottom == 9)
     }
+
+    /// Issue #359: Resize from big to small should keep alt buffer maxLength
+    /// in sync so isFull is correct when vim scrolls.
+    @Test func testResizeSmallerAltBufferMaxLength() {
+        let (terminal, _) = TerminalTestHarness.makeTerminal(cols: 80, rows: 40, scrollback: 0)
+
+        // Resize smaller before opening alt buffer
+        terminal.resize(cols: 80, rows: 20)
+
+        // Alt buffer maxLength must match the new row count
+        #expect(terminal.altBuffer.lines.maxLength == 20)
+    }
+
+    /// Issue #359: Scrolling in alt buffer after resize should not shift yBase.
+    @Test func testResizeThenAltBufferScrollKeepsYBaseZero() {
+        let (terminal, _) = TerminalTestHarness.makeTerminal(cols: 80, rows: 40, scrollback: 0)
+
+        // Shrink terminal
+        terminal.resize(cols: 80, rows: 20)
+
+        // Activate alt buffer (like vim opening via CSI ?1049h)
+        terminal.feed(text: "\(esc)[?1049h")
+        #expect(terminal.buffer.lines.isFull)
+
+        // Set scroll region leaving last row for status (like vim)
+        terminal.feed(text: "\(esc)[1;19r")
+
+        // Move cursor to bottom of scroll region and scroll several times
+        terminal.feed(text: "\(esc)[19;1H")
+        for _ in 0..<10 {
+            terminal.feed(text: "\n")
+        }
+
+        // yBase must remain 0 in alt buffer (no scrollback)
+        #expect(terminal.buffer.yBase == 0)
+        #expect(terminal.buffer.yDisp == 0)
+    }
 }

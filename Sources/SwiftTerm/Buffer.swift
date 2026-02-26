@@ -488,6 +488,11 @@ public final class Buffer {
             savedX = min (savedX, newCols - 1)
 
             scrollTop = 0
+        } else if newMaxLength < lines.maxLength {
+            // When the buffer is empty (e.g., alt buffer before activation),
+            // the maxLength reduction above was skipped. Ensure maxLength
+            // matches the new terminal size so isFull remains accurate.
+            lines.maxLength = newMaxLength
         }
         scrollBottom = newRows - 1
         if tabStops.count > newCols {
