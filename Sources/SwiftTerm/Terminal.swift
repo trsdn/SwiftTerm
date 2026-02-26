@@ -406,6 +406,15 @@ open class Terminal {
     // Whether the terminal is operating in application cursor mode
     public var applicationCursor : Bool = false
 
+    // XTMODKEYS resource values (xterm modifier key encoding)
+    // Ps=0: modifyKeyboard, Ps=1: modifyCursorKeys, Ps=2: modifyFunctionKeys, Ps=4: modifyOtherKeys
+    var xtmodKeys: [Int: Int] = [0: 0, 1: 2, 2: 2, 4: 0]
+
+    /// The current modifyOtherKeys mode (0=disabled, 1=basic, 2=full)
+    public var modifyOtherKeys: Int {
+        xtmodKeys[4] ?? 0
+    }
+
     private struct KeyboardModeState {
         var flags: KittyKeyboardFlags = []
         var stack: [KittyKeyboardFlags] = []
@@ -907,6 +916,7 @@ open class Terminal {
 
         keyboardModeNormal = KeyboardModeState()
         keyboardModeAlt = KeyboardModeState()
+        xtmodKeys = [0: 0, 1: 2, 2: 2, 4: 0]
         
         // charset'
         gCharsets = [CharSets.defaultCharset, nil, nil, nil]
@@ -3560,6 +3570,7 @@ open class Terminal {
         hyperLinkTracking = nil
         lineFeedMode = options.convertEol
         resetAllColors()
+        xtmodKeys = [0: 0, 1: 2, 2: 2, 4: 0]
         tdel?.showCursor(source: self)
         // MIGUEL TODO:
         // TODO: audit any new variables, those in setup might be useful
@@ -3739,14 +3750,49 @@ open class Terminal {
         case 0:
             cmdCharAttributes(pars)
         case 1:
-            // Configure Modifier Key Reporting Formats
-            // TODO: XTMODKEYS
             if collect[0] == UInt8(ascii: ">") {
-                break
+                // XTMODKEYS — CSI > Ps ; Pv m
+                cmdSetModKeys(pars)
+            } else if collect[0] == UInt8(ascii: "?") {
+                // XTQMODKEYS — CSI ? Ps m
+                cmdQueryModKeys(pars)
             }
         default:
             break
         }
+    }
+
+    // XTMODKEYS: Set modifier key encoding resources
+    // CSI > Ps ; Pv m
+    //   Ps=0: modifyKeyboard (valid Pv: 0..3)
+    //   Ps=1: modifyCursorKeys (valid Pv: 0..3)
+    //   Ps=2: modifyFunctionKeys (valid Pv: 0..3)
+    //   Ps=4: modifyOtherKeys (valid Pv: 0..2)
+    // If Pv is omitted, the resource is reset to its default.
+    func cmdSetModKeys (_ pars: [Int])
+    {
+        let ps = pars.count > 0 ? pars[0] : 0
+        let defaults: [Int: Int] = [0: 0, 1: 2, 2: 2, 4: 0]
+        guard defaults.keys.contains(ps) else { return }
+
+        if pars.count < 2 {
+            xtmodKeys[ps] = defaults[ps]
+        } else {
+            let pv = pars[1]
+            let maxVal = (ps == 4) ? 2 : 3
+            if pv >= 0 && pv <= maxVal {
+                xtmodKeys[ps] = pv
+            }
+        }
+    }
+
+    // XTQMODKEYS: Query modifier key encoding resources
+    // CSI ? Ps m  — responds with CSI > Ps ; Pv m
+    func cmdQueryModKeys (_ pars: [Int])
+    {
+        let ps = pars.count > 0 ? pars[0] : 0
+        guard let pv = xtmodKeys[ps] else { return }
+        sendResponse(cc.CSI, ">\(ps);\(pv)m")
     }
 
     @inline(__always)
