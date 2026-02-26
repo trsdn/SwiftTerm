@@ -293,6 +293,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
             settingFg = true
             _nativeFg = newValue
             terminal.foregroundColor = nativeForegroundColor.getTerminalColor ()
+            colorsChanged()
             settingFg = false
         }
     }
@@ -309,6 +310,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
             settingBg = true
             _nativeBg = newValue
             terminal.backgroundColor = nativeBackgroundColor.getTerminalColor ()
+            colorsChanged()
             settingBg = false
         }
     }

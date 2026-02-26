@@ -961,6 +961,7 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
             settingFg = true
             _nativeFg = newValue
             terminal.foregroundColor = nativeForegroundColor.getTerminalColor ()
+            colorsChanged()
             settingFg = false
         }
     }
