@@ -662,8 +662,14 @@ public class MetalTerminalRenderer: TerminalRenderer {
 
     fragment float4 textFragment(
         VertexOut in [[stage_in]],
-        texture2d<float> atlas [[texture(0)]]
+        texture2d<float> atlas [[texture(0)]],
+        constant Uniforms& uniforms [[buffer(1)]]
     ) {
+        // Blink: hide glyph when blink flag is set and blink phase is off
+        if ((in.flags & BLINK_BIT) != 0 && uniforms.blinkOn == 0) {
+            discard_fragment();
+        }
+
         constexpr sampler s(filter::linear);
         float alpha = atlas.sample(s, in.texCoord).r;
 
@@ -690,6 +696,7 @@ public class MetalTerminalRenderer: TerminalRenderer {
 
         float2 pos = positions[vertexID];
         float2 cellOrigin = float2(col, row) * uniforms.cellSize;
+        cellOrigin.y -= uniforms.scrollY;
         float2 pixelPos = cellOrigin + pos * uniforms.cellSize;
 
         float2 clipPos = (pixelPos / uniforms.viewportSize) * 2.0 - 1.0;
