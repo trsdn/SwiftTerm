@@ -179,6 +179,14 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     var cellDimension: CellDimension!
     var caretView: CaretView?
     var terminal: Terminal!
+
+    /// The rendering backend used by this terminal view.
+    /// Defaults to ``CoreGraphicsRenderer``.
+    public var renderer: TerminalRenderer? {
+        didSet {
+            renderer?.setup(view: self)
+        }
+    }
     private var progressBarView: TerminalProgressBarView?
     private var progressReportTimer: Timer?
     private var lastProgressValue: UInt8?
@@ -288,6 +296,11 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         setupGestures ()
         setupLinkReportingInteractions()
         setupAccessoryView ()
+        if renderer == nil {
+            let cg = CoreGraphicsRenderer()
+            cg.setup(view: self)
+            renderer = cg
+        }
     }
 
     func setupDisplayUpdates ()
@@ -1387,7 +1400,16 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         context.scaleBy (x: 1, y: -1)
         context.translateBy(x: 0, y: -frame.height)
 
-        drawTerminalContents (dirtyRect: dirtyRect, context: context, bufferOffset: 0)
+        if let renderer {
+            let dims = CellDimensions(
+                width: cellDimension.width,
+                height: cellDimension.height,
+                descent: CTFontGetDescent(fontSet.normal),
+                leading: CTFontGetLeading(fontSet.normal))
+            renderer.draw(in: context, dirtyRect: dirtyRect, cellDimensions: dims, bufferOffset: 0)
+        } else {
+            drawTerminalContents(dirtyRect: dirtyRect, context: context, bufferOffset: 0)
+        }
     }
 
     open override func layoutSubviews() {
