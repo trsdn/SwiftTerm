@@ -23,13 +23,16 @@ class ViewController: NSViewController, LocalProcessTerminalViewDelegate, NSUser
             return
         }
         changingSize = true
-        //var border = view.window!.frame - view.frame
         var newFrame = terminal.getOptimalFrameSize ()
-        let windowFrame = view.window!.frame
+        let window = view.window!
+        let windowFrame = window.frame
         
-        newFrame = CGRect (x: windowFrame.minX, y: windowFrame.minY, width: newFrame.width, height: windowFrame.height - view.frame.height + newFrame.height)
+        // Use contentLayoutRect to compute chrome height, which correctly accounts
+        // for title bar, toolbar, and safe area insets (macOS Tahoe and later)
+        let chromeHeight = windowFrame.height - window.contentLayoutRect.height
+        newFrame = CGRect (x: windowFrame.minX, y: windowFrame.minY, width: newFrame.width, height: newFrame.height + chromeHeight)
 
-        view.window?.setFrame(newFrame, display: true, animate: true)
+        window.setFrame(newFrame, display: true, animate: true)
         changingSize = false
     }
     
@@ -170,7 +173,17 @@ class ViewController: NSViewController, LocalProcessTerminalViewDelegate, NSUser
     override func viewDidLayout() {
         super.viewDidLayout()
         changingSize = true
-        terminal.frame = view.frame
+        if #available(macOS 11.0, *) {
+            let insets = view.safeAreaInsets
+            terminal.frame = NSRect(
+                x: insets.left,
+                y: insets.bottom,
+                width: view.bounds.width - insets.left - insets.right,
+                height: view.bounds.height - insets.top - insets.bottom
+            )
+        } else {
+            terminal.frame = view.bounds
+        }
         changingSize = false
         terminal.needsLayout = true
     }
