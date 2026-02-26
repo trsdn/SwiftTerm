@@ -195,6 +195,11 @@ public final class BufferLine: CustomDebugStringConvertible {
             dataSize = cols
         } else {
             if cols > 0 {
+                // Sanitize wide character at the truncation boundary to prevent
+                // a half-wide character from remaining (issue #361).
+                if data[cols - 1].width == 2 {
+                    data[cols - 1] = fillData
+                }
                 let newBuf = UnsafeMutableBufferPointer<CharData>.allocate(capacity: cols)
                 _ = newBuf.initialize(fromContentsOf: data[0..<cols])
                 data.deinitialize()

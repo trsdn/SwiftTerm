@@ -553,7 +553,12 @@ extension TerminalView {
         }
 
         while col < cols {
-            let ch: CharData = line[col]
+            var ch: CharData = line[col]
+            // Guard against a wide character at the last column that would
+            // extend beyond the terminal width (issue #361).
+            if Int(ch.width) == 2 && col + 2 > cols {
+                ch = CharData(attribute: ch.attribute)
+            }
             let width = max(1, Int(ch.width))
             let attr = ch.attribute
             let hasUrl = ch.hasPayload

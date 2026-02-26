@@ -94,6 +94,8 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     private var findBarOptions: SearchOptions = SearchOptions()
     var debug: TerminalDebugView?
     var pendingDisplay: Bool = false
+    // Coalesces rapid resize events to avoid redundant buffer reflow (issue #361).
+    private var pendingResizeWorkItem: DispatchWorkItem?
     
     var cellDimension: CellDimension!
     var caretView: CaretView!
@@ -538,12 +540,21 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         updateScrollerFrame()
         updateCursorPosition()
         updateProgressBarFrame()
-        if !processSizeChange(newSize: frame.size) {
-            // Frame changed without altering the terminal grid size;
-            // force a full redraw so row positions are recalculated and
-            // no stale content remains at the edges.
-            needsDisplay = true
+
+        // Coalesce rapid resize events: cancel any pending terminal resize
+        // and schedule a new one at the end of the current run loop pass.
+        // This avoids redundant buffer reflow when AppKit fires many
+        // setFrameSize calls in quick succession during live window resize.
+        pendingResizeWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.pendingResizeWorkItem = nil
+            if !self.processSizeChange(newSize: self.frame.size) {
+                self.needsDisplay = true
+            }
         }
+        pendingResizeWorkItem = workItem
+        DispatchQueue.main.async(execute: workItem)
     }
 
     public override func resizeSubviews(withOldSize oldSize: NSSize) {
