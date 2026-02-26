@@ -15,7 +15,7 @@ struct CellData {
     uint16_t glyphIndex;
     uint8_t  fgR, fgG, fgB, fgA;
     uint8_t  bgR, bgG, bgB, bgA;
-    uint16_t flags;    // bit 0: bold, 1: italic, 2: underline, 3: strikethrough, 4: inverse, 5: blink
+    uint16_t flags;    // bit 0: bold, 1: italic, 2: underline, 3: strikethrough, 4: inverse, 5: blink, 6: dim
     uint16_t padding;
 };
 

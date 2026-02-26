@@ -44,7 +44,7 @@ struct VertexOut {
     float2 texCoord;
     float4 fgColor;
     float4 bgColor;
-    uint flags;
+    uint flags [[flat]];
 };
 
 // ---- Background Pass ----
@@ -146,4 +146,71 @@ fragment float4 textFragment(
     if (alpha < 0.01) discard_fragment();
 
     return float4(in.fgColor.rgb, in.fgColor.a * alpha);
+}
+
+// ---- Decoration Pass (underline, strikethrough) ----
+
+vertex VertexOut decoVertex(
+    uint vertexID [[vertex_id]],
+    uint instanceID [[instance_id]],
+    constant CellData* cells [[buffer(0)]],
+    constant Uniforms& uniforms [[buffer(1)]]
+) {
+    uint col = instanceID % uniforms.cols;
+    uint row = instanceID / uniforms.cols;
+
+    float2 positions[6] = {
+        {0, 0}, {1, 0}, {0, 1},
+        {1, 0}, {1, 1}, {0, 1}
+    };
+
+    float2 pos = positions[vertexID];
+    float2 cellOrigin = float2(col, row) * uniforms.cellSize;
+    float2 pixelPos = cellOrigin + pos * uniforms.cellSize;
+
+    float2 clipPos = (pixelPos / uniforms.viewportSize) * 2.0 - 1.0;
+    clipPos.y = -clipPos.y;
+
+    CellData cell = cells[instanceID];
+    float4 fg = float4(cell.fgR, cell.fgG, cell.fgB, cell.fgA) / 255.0;
+
+    VertexOut out;
+    out.position = float4(clipPos, 0.0, 1.0);
+    out.texCoord = pos;  // cell-local position (0..1)
+    out.fgColor = fg;
+    out.bgColor = float4(0);
+    out.flags = cell.flags;
+    return out;
+}
+
+fragment float4 decoFragment(
+    VertexOut in [[stage_in]],
+    constant Uniforms& uniforms [[buffer(0)]]
+) {
+    uint flags = in.flags;
+    bool hasUnderline = (flags & (1u << 2)) != 0;
+    bool hasStrikethrough = (flags & (1u << 3)) != 0;
+
+    if (!hasUnderline && !hasStrikethrough) discard_fragment();
+
+    float y = in.texCoord.y;
+    float pixelH = 1.0 / uniforms.cellSize.y;
+
+    bool draw = false;
+
+    // Underline: 1px line 3 pixels from bottom of cell
+    if (hasUnderline) {
+        float underlineY = 1.0 - 3.0 * pixelH;
+        if (y >= underlineY && y < underlineY + pixelH) draw = true;
+    }
+
+    // Strikethrough: 1px line at vertical center
+    if (hasStrikethrough) {
+        float strikeY = 0.5 - 0.5 * pixelH;
+        if (y >= strikeY && y < strikeY + pixelH) draw = true;
+    }
+
+    if (!draw) discard_fragment();
+
+    return in.fgColor;
 }

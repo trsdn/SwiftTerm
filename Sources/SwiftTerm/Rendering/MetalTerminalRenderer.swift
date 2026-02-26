@@ -40,6 +40,7 @@ struct Uniforms {
     var rows: UInt32 = 0
     var time: Float = 0
     var blinkOn: UInt32 = 1
+    var scrollY: Float = 0          // Viewport scroll offset in pixels (for smooth scrolling)
 }
 
 // MARK: - MetalTerminalRenderer
@@ -57,6 +58,7 @@ public class MetalTerminalRenderer: TerminalRenderer {
     let commandQueue: MTLCommandQueue
     var bgPipelineState: MTLRenderPipelineState
     var textPipelineState: MTLRenderPipelineState
+    var decoPipelineState: MTLRenderPipelineState
 
     // MARK: - Buffers
 
@@ -76,6 +78,8 @@ public class MetalTerminalRenderer: TerminalRenderer {
     var rows: Int = 0
     var cellDims: CellDimensions = CellDimensions(width: 8, height: 16, descent: 3, leading: 1)
     var viewportSize: CGSize = .zero
+    /// Whether the terminal is scrolled to the bottom (auto-scroll active).
+    private(set) var isScrolledToBottom: Bool = true
 
     /// Map from GlyphKey to glyph entry index in the GPU buffer.
     private var glyphIndexMap: [GlyphKey: UInt16] = [:]
@@ -141,6 +145,22 @@ public class MetalTerminalRenderer: TerminalRenderer {
             textPipelineState = try dev.makeRenderPipelineState(descriptor: textDesc)
         } catch {
             fatalError("MetalTerminalRenderer: failed to create text pipeline: \(error)")
+        }
+
+        // Decoration pipeline (underline, strikethrough — drawn after text)
+        let decoDesc = MTLRenderPipelineDescriptor()
+        decoDesc.vertexFunction = library.makeFunction(name: "decoVertex")
+        decoDesc.fragmentFunction = library.makeFunction(name: "decoFragment")
+        decoDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
+        decoDesc.colorAttachments[0].isBlendingEnabled = true
+        decoDesc.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+        decoDesc.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        decoDesc.colorAttachments[0].sourceAlphaBlendFactor = .one
+        decoDesc.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        do {
+            decoPipelineState = try dev.makeRenderPipelineState(descriptor: decoDesc)
+        } catch {
+            fatalError("MetalTerminalRenderer: failed to create deco pipeline: \(error)")
         }
 
         // Uniform buffer
@@ -291,6 +311,9 @@ public class MetalTerminalRenderer: TerminalRenderer {
         let cellCount = cols * rows
         let requiredSize = cellCount * MemoryLayout<CellData>.stride
 
+        // Track auto-scroll state: at bottom when yDisp == yBase
+        isScrolledToBottom = (displayBuffer.yDisp == displayBuffer.yBase)
+
         // Recreate buffer if size changed
         if cellBuffer == nil || cellBuffer!.length < requiredSize {
             cellBuffer = device.makeBuffer(length: requiredSize, options: .storageModeShared)
@@ -300,7 +323,8 @@ public class MetalTerminalRenderer: TerminalRenderer {
         let cells = buffer.contents().bindMemory(to: CellData.self, capacity: cellCount)
 
         for row in 0..<rows {
-            let lineIndex = row + displayBuffer.yDisp
+            // Use bufferOffset (yDisp) to read the correct buffer lines
+            let lineIndex = row + bufferOffset
             guard lineIndex >= 0, lineIndex < displayBuffer.lines.count else {
                 for col in 0..<cols {
                     cells[row * cols + col] = CellData()
@@ -315,10 +339,15 @@ public class MetalTerminalRenderer: TerminalRenderer {
 
                 var cell = CellData()
 
-                // Resolve glyph
-                let codePoint = UInt32(ch.code > 0 ? ch.code : 32) // space for empty cells
-                let style = glyphStyle(from: ch.attribute.style)
-                cell.glyphIndex = getOrCreateGlyphIndex(codePoint: codePoint, style: style)
+                // Wide character spacer cell (second cell of a 2-wide char): skip glyph
+                if ch.width == 0 {
+                    cell.glyphIndex = 0
+                } else {
+                    // Resolve glyph
+                    let codePoint = UInt32(ch.code > 0 ? ch.code : 32) // space for empty cells
+                    let style = glyphStyle(from: ch.attribute.style)
+                    cell.glyphIndex = getOrCreateGlyphIndex(codePoint: codePoint, style: style)
+                }
 
                 // Resolve colors
                 let (fgR, fgG, fgB) = resolveColor(ch.attribute.fg, isFg: true, terminal: terminal)
@@ -332,6 +361,13 @@ public class MetalTerminalRenderer: TerminalRenderer {
                 } else {
                     cell.fgR = fgR; cell.fgG = fgG; cell.fgB = fgB; cell.fgA = 255
                     cell.bgR = bgR; cell.bgG = bgG; cell.bgB = bgB; cell.bgA = 255
+                }
+
+                // Apply dim/faint (reduce foreground brightness to ~2/3)
+                if ch.attribute.style.contains(.dim) {
+                    cell.fgR = UInt8(UInt16(cell.fgR) * 2 / 3)
+                    cell.fgG = UInt8(UInt16(cell.fgG) * 2 / 3)
+                    cell.fgB = UInt8(UInt16(cell.fgB) * 2 / 3)
                 }
 
                 // Pack style flags
@@ -382,6 +418,8 @@ public class MetalTerminalRenderer: TerminalRenderer {
 
     /// Returns the GPU glyph index for the given code point and style,
     /// rasterizing into the atlas on cache miss.
+    /// Box drawing (U+2500–U+257F) and block elements (U+2580–U+259F)
+    /// are rendered through the glyph atlas via CoreText like normal glyphs.
     private func getOrCreateGlyphIndex(codePoint: UInt32, style: GlyphStyle) -> UInt16 {
         // Space or control characters → index 0 (empty glyph)
         if codePoint <= 32 { return 0 }
@@ -419,7 +457,8 @@ public class MetalTerminalRenderer: TerminalRenderer {
         uniforms.cols = UInt32(cols)
         uniforms.rows = UInt32(rows)
         uniforms.time = Float(CACurrentMediaTime())
-        uniforms.blinkOn = 1
+        uniforms.blinkOn = (terminalView?.blinkOn ?? true) ? 1 : 0
+        uniforms.scrollY = 0   // Cell buffer already reads correct lines via bufferOffset (yDisp)
 
         let ptr = uniformBuffer.contents().bindMemory(to: Uniforms.self, capacity: 1)
         ptr.pointee = uniforms
@@ -472,9 +511,17 @@ public class MetalTerminalRenderer: TerminalRenderer {
         encoder.setVertexBuffer(cellBuf, offset: 0, index: 0)
         encoder.setVertexBuffer(uniformBuffer, offset: 0, index: 1)
         encoder.setVertexBuffer(glyphBuf, offset: 0, index: 2)
+        encoder.setFragmentBuffer(uniformBuffer, offset: 0, index: 1)
         if let atlasTexture = glyphAtlas?.atlasTexture {
             encoder.setFragmentTexture(atlasTexture, index: 0)
         }
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: cellCount)
+
+        // Decoration pass (underline, strikethrough)
+        encoder.setRenderPipelineState(decoPipelineState)
+        encoder.setVertexBuffer(cellBuf, offset: 0, index: 0)
+        encoder.setVertexBuffer(uniformBuffer, offset: 0, index: 1)
+        encoder.setFragmentBuffer(uniformBuffer, offset: 0, index: 0)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: cellCount)
 
         encoder.endEncoding()
@@ -488,6 +535,9 @@ public class MetalTerminalRenderer: TerminalRenderer {
     static let shaderSource = """
     #include <metal_stdlib>
     using namespace metal;
+
+    // Flag bits (must match Swift CellData.flags packing)
+    constant uint BLINK_BIT = (1u << 5);
 
     struct CellData {
         uint16_t glyphIndex;
@@ -505,6 +555,7 @@ public class MetalTerminalRenderer: TerminalRenderer {
         uint32_t rows;
         float time;
         uint32_t blinkOn;
+        float scrollY;
     };
 
     struct GlyphEntry {
@@ -518,7 +569,7 @@ public class MetalTerminalRenderer: TerminalRenderer {
         float2 texCoord;
         float4 fgColor;
         float4 bgColor;
-        uint flags;
+        uint flags [[flat]];
     };
 
     // ---- Background Pass ----
@@ -539,6 +590,7 @@ public class MetalTerminalRenderer: TerminalRenderer {
 
         float2 pos = positions[vertexID];
         float2 cellOrigin = float2(col, row) * uniforms.cellSize;
+        cellOrigin.y -= uniforms.scrollY;
         float2 pixelPos = cellOrigin + pos * uniforms.cellSize;
 
         float2 clipPos = (pixelPos / uniforms.viewportSize) * 2.0 - 1.0;
@@ -590,6 +642,7 @@ public class MetalTerminalRenderer: TerminalRenderer {
 
         float2 pos = positions[vertexID];
         float2 cellOrigin = float2(col, row) * uniforms.cellSize;
+        cellOrigin.y -= uniforms.scrollY;
         float2 glyphOrigin = cellOrigin + float2(glyph.bearing.x, glyph.bearing.y);
         float2 pixelPos = glyphOrigin + pos * glyph.size;
 
@@ -617,6 +670,73 @@ public class MetalTerminalRenderer: TerminalRenderer {
         if (alpha < 0.01) discard_fragment();
 
         return float4(in.fgColor.rgb, in.fgColor.a * alpha);
+    }
+
+    // ---- Decoration Pass (underline, strikethrough) ----
+
+    vertex VertexOut decoVertex(
+        uint vertexID [[vertex_id]],
+        uint instanceID [[instance_id]],
+        constant CellData* cells [[buffer(0)]],
+        constant Uniforms& uniforms [[buffer(1)]]
+    ) {
+        uint col = instanceID % uniforms.cols;
+        uint row = instanceID / uniforms.cols;
+
+        float2 positions[6] = {
+            {0, 0}, {1, 0}, {0, 1},
+            {1, 0}, {1, 1}, {0, 1}
+        };
+
+        float2 pos = positions[vertexID];
+        float2 cellOrigin = float2(col, row) * uniforms.cellSize;
+        float2 pixelPos = cellOrigin + pos * uniforms.cellSize;
+
+        float2 clipPos = (pixelPos / uniforms.viewportSize) * 2.0 - 1.0;
+        clipPos.y = -clipPos.y;
+
+        CellData cell = cells[instanceID];
+        float4 fg = float4(cell.fgR, cell.fgG, cell.fgB, cell.fgA) / 255.0;
+
+        VertexOut out;
+        out.position = float4(clipPos, 0.0, 1.0);
+        out.texCoord = pos;  // cell-local position (0..1)
+        out.fgColor = fg;
+        out.bgColor = float4(0);
+        out.flags = cell.flags;
+        return out;
+    }
+
+    fragment float4 decoFragment(
+        VertexOut in [[stage_in]],
+        constant Uniforms& uniforms [[buffer(0)]]
+    ) {
+        uint flags = in.flags;
+        bool hasUnderline = (flags & (1u << 2)) != 0;
+        bool hasStrikethrough = (flags & (1u << 3)) != 0;
+
+        if (!hasUnderline && !hasStrikethrough) discard_fragment();
+
+        float y = in.texCoord.y;
+        float pixelH = 1.0 / uniforms.cellSize.y;
+
+        bool draw = false;
+
+        // Underline: 1px line 3 pixels from bottom of cell
+        if (hasUnderline) {
+            float underlineY = 1.0 - 3.0 * pixelH;
+            if (y >= underlineY && y < underlineY + pixelH) draw = true;
+        }
+
+        // Strikethrough: 1px line at vertical center
+        if (hasStrikethrough) {
+            float strikeY = 0.5 - 0.5 * pixelH;
+            if (y >= strikeY && y < strikeY + pixelH) draw = true;
+        }
+
+        if (!draw) discard_fragment();
+
+        return in.fgColor;
     }
     """
 }
