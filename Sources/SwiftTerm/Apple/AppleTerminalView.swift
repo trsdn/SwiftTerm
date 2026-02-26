@@ -1459,16 +1459,25 @@ extension TerminalView {
     // the update for a 1/600th of a second.
     //
     // It is also cheap, so should be called when new data has been posted or received.
+    //
+    // When the user recently pressed a key, we use a shorter delay to prioritize
+    // displaying the keystroke echo, reducing perceived input latency.
     func queuePendingDisplay ()
     {
         // throttle
         if !pendingDisplay {
+            let now = DispatchTime.now().uptimeNanoseconds
             let fps60 = 16670000
-            // let fps30 = 16670000*2
-            let fpsDelay = fps60
+            let keyboardPriorityWindow: UInt64 = 50_000_000 // 50ms
+            let fpsDelay: Int
+            if now - lastKeyboardInputTime < keyboardPriorityWindow {
+                fpsDelay = 4_000_000 // ~4ms for faster key echo
+            } else {
+                fpsDelay = fps60
+            }
             pendingDisplay = true
             DispatchQueue.main.asyncAfter(
-                deadline: DispatchTime (uptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + UInt64 (fpsDelay)),
+                deadline: DispatchTime (uptimeNanoseconds: now + UInt64 (fpsDelay)),
                 execute: updateDisplay)
         }
     }

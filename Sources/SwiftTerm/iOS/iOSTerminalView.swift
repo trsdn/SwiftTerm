@@ -175,6 +175,7 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     var search: SearchService!
     var debug: UIView?
     var pendingDisplay: Bool = false
+    var lastKeyboardInputTime: UInt64 = 0
     var cellDimension: CellDimension!
     var caretView: CaretView?
     var terminal: Terminal!

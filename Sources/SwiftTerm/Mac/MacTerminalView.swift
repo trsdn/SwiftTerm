@@ -94,6 +94,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     private var findBarOptions: SearchOptions = SearchOptions()
     var debug: TerminalDebugView?
     var pendingDisplay: Bool = false
+    var lastKeyboardInputTime: UInt64 = 0
     // Coalesces rapid resize events to avoid redundant buffer reflow (issue #361).
     private var pendingResizeWorkItem: DispatchWorkItem?
     
@@ -803,6 +804,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     //
     public override func keyDown(with event: NSEvent) {
         selection.active = false
+        lastKeyboardInputTime = DispatchTime.now().uptimeNanoseconds
         let eventFlags = event.modifierFlags
 
         if !terminal.keyboardEnhancementFlags.isEmpty {
@@ -839,6 +841,27 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
             pendingKittyKeyEvent = PendingKittyKeyEvent(event: event, eventType: textEventType)
             interpretKeyEvents([event])
             return
+        }
+
+        // xterm modifyOtherKeys: encode modified printable keys as CSI 27 ; mod ; keycode ~
+        if terminal.modifyOtherKeys > 0 {
+            let mod = xtermModifierParam(from: eventFlags)
+            if mod > 0 {
+                // Mode 1: only Ctrl/Alt modifiers; Mode 2: any modifier including Shift
+                let isRelevant = terminal.modifyOtherKeys >= 2 ||
+                    eventFlags.contains(.control) ||
+                    (optionAsMetaKey && eventFlags.contains(.option))
+
+                if isRelevant, let ch = event.charactersIgnoringModifiers,
+                   let scalar = ch.unicodeScalars.first {
+                    let keycode = Int(scalar.value)
+                    // Only printable keys, skip macOS function key range (0xF700-0xF8FF)
+                    if keycode >= 0x20 && (keycode < 0xF700 || keycode > 0xF8FF) {
+                        send(txt: "\u{1b}[27;\(mod);\(keycode)~")
+                        return
+                    }
+                }
+            }
         }
         
         // Handle Option-letter to send the ESC sequence plus the letter as expected by terminals
@@ -1106,6 +1129,15 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         KittyKeyboardEncoder(flags: terminal.keyboardEnhancementFlags,
                              applicationCursor: terminal.applicationCursor,
                              backspaceSendsControlH: backspaceSendsControlH)
+    }
+
+    /// Computes the xterm modifier parameter: 1 + shift(1) + alt(2) + ctrl(4)
+    private func xtermModifierParam(from flags: NSEvent.ModifierFlags) -> Int {
+        var mod = 0
+        if flags.contains(.shift) { mod += 1 }
+        if optionAsMetaKey && flags.contains(.option) { mod += 2 }
+        if flags.contains(.control) { mod += 4 }
+        return mod > 0 ? mod + 1 : 0
     }
 
     private func kittyModifiers(from event: NSEvent, includeOption: Bool) -> KittyKeyboardModifiers {
