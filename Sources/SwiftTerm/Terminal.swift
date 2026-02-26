@@ -2369,6 +2369,9 @@ open class Terminal {
                 buffer.linesTop = 0
                 buffer.yBase = max (buffer.yBase - scrollBackSize, 0)
                 buffer.yDisp = max (buffer.yDisp - scrollBackSize, 0)
+                // Trigger a full display refresh so the view picks up the
+                // changed yBase/yDisp and redraws with the correct offsets.
+                updateFullScreen()
             }
             break;
         default:
