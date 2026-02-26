@@ -113,6 +113,10 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     var attributes: [Attribute: [NSAttributedString.Key:Any]] = [:]
     var urlAttributes: [Attribute: [NSAttributedString.Key:Any]] = [:]
     
+    // Per-line cache for built ViewLineInfo, keyed by absolute row index.
+    // Avoids regenerating attributed strings for lines that haven't changed.
+    var lineInfoCache: [Int: ViewLineInfo] = [:]
+    
     // Blink state: toggled by a timer to animate blinking text (SGR 5)
     var blinkOn: Bool = true
     private var blinkTimer: Timer?
@@ -201,6 +205,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
             // Invalidate cached attributes for blink cells
             self.attributes = self.attributes.filter { !$0.key.style.contains(.blink) }
             self.urlAttributes = self.urlAttributes.filter { !$0.key.style.contains(.blink) }
+            self.lineInfoCache = [:]
             self.setNeedsDisplay(self.bounds)
         }
     }
@@ -1767,6 +1772,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     }
     
     open func selectionChanged(source: Terminal) {
+        lineInfoCache = [:]
         needsDisplay = true
     }
     
@@ -1890,6 +1896,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
             
             selection.select(row: hit.row)
         }
+        lineInfoCache = [:]
         setNeedsDisplay(bounds)
     }
     
@@ -1957,6 +1964,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
                 autoScrollDelta = calcScrollingVelocity(delta: screenRow - displayBuffer.rows)
             }
         }
+        lineInfoCache = [:]
         setNeedsDisplay(bounds)
     }
     

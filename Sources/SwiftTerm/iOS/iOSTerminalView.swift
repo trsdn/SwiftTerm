@@ -191,6 +191,10 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     // of attributes for an NSAttributedString
     var attributes: [Attribute: [NSAttributedString.Key:Any]] = [:]
     var urlAttributes: [Attribute: [NSAttributedString.Key:Any]] = [:]
+    
+    // Per-line cache for built ViewLineInfo, keyed by absolute row index.
+    // Avoids regenerating attributed strings for lines that haven't changed.
+    var lineInfoCache: [Int: ViewLineInfo] = [:]
 
     // Blink state: toggled by a timer to animate blinking text (SGR 5)
     var blinkOn: Bool = true
@@ -2460,6 +2464,7 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         pendingSelectionChanged = true
         DispatchQueue.main.async {
             self.pendingSelectionChanged = false
+            self.lineInfoCache = [:]
             
             self.inputDelegate?.selectionWillChange (self)
             self.inputDelegate?.selectionDidChange(self)

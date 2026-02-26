@@ -85,6 +85,7 @@ extension TerminalView {
     {
         self.attributes = [:]
         self.urlAttributes = [:]
+        self.lineInfoCache = [:]
         self.colors = Array(repeating: nil, count: 256)
         self.trueColors = [:]
     }
@@ -166,6 +167,7 @@ extension TerminalView {
         
         if newCols != terminal.cols || newRows != terminal.rows {
             selection.active = false
+            lineInfoCache = [:]
             terminal.resize (cols: newCols, rows: newRows)
             
             // These used to be outside
@@ -262,6 +264,7 @@ extension TerminalView {
     {
         urlAttributes = [:]
         attributes = [:]
+        lineInfoCache = [:]
         
         // Keep the layer background in sync so the gap below the last
         // terminal row (when the frame height is not an exact multiple of
@@ -1036,7 +1039,13 @@ extension TerminalView {
             } 
             #endif
             let line = displayBuffer.lines [row]
-            let lineInfo = buildAttributedString(row: row, line: line, cols: displayBuffer.cols)
+            let lineInfo: ViewLineInfo
+            if let cached = lineInfoCache[row] {
+                lineInfo = cached
+            } else {
+                lineInfo = buildAttributedString(row: row, line: line, cols: displayBuffer.cols)
+                lineInfoCache[row] = lineInfo
+            }
             let rowBase = lineOrigin.y + cellDimension.height
             var underTextImages: [AppleImage] = []
             var overTextKittyImages: [AppleImage] = []
@@ -1382,6 +1391,12 @@ extension TerminalView {
         }
 
         terminal.clearUpdateRange ()
+        
+        // Invalidate cached ViewLineInfo for the dirty rows
+        let yDisp = terminal.displayBuffer.yDisp
+        for row in rowStart...rowEnd {
+            lineInfoCache.removeValue(forKey: yDisp + row)
+        }
                 
         #if os(macOS)
         let baseLine = frame.height
@@ -1589,6 +1604,7 @@ extension TerminalView {
     {
         let displayBuffer = terminal.displayBuffer
         if row != displayBuffer.yDisp {
+            lineInfoCache = [:]
             terminal.setViewYDisp (row)
             
             // Track whether the user has scrolled away from the bottom so that
